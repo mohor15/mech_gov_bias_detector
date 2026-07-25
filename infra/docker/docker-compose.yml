@@ -1,0 +1,17 @@
+# M0: one service, one volume for the SQLite evidence file. Multi-plane
+# topology (sync/async/data/human) is M13 — a single container is the
+# correct amount of infrastructure for a walking skeleton.
+services:
+  governance-platform:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - evidence-data:/app/data
+    environment:
+      GOV_PLATFORM_LOG_LEVEL: INFO
+
+volumes:
+  evidence-data:
