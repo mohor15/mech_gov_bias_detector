@@ -23,9 +23,16 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from gov_platform.audit.evidence_store import EvidenceStore
+from gov_platform.db.repositories.decision_event import DecisionEventRepository
+from gov_platform.db.repositories.protected_attribute_resolution import (
+    ProtectedAttributeResolutionRepository,
+)
+from gov_platform.db.repositories.system import SystemRepository
 from gov_platform.schemas.finding import Finding, FindingOutcome
+from gov_platform.schemas.protected_attribute import ProtectedAttributeClassification
 from gov_platform.schemas.verdict import GovernanceVerdict, VerdictStatus
 from tests.conftest import requires_postgres
 
@@ -178,3 +185,86 @@ def test_concurrent_appends_produce_one_unbroken_chain(
     for earlier, later in zip(new_records, new_records[1:]):  # noqa: B905
         assert later.previous_hash == earlier.record_hash
     assert len({r.record_hash for r in new_records}) == _CONCURRENT_WRITERS
+
+
+def test_append_persists_protected_attribute_resolutions_for_a_known_domain(
+    evidence_store: EvidenceStore, make_decision_event, db_engine
+) -> None:
+    # M2: the sixth-table write. Pre-registering the System with a domain
+    # `protected_attributes/classification.py` actually has rules for is
+    # what makes this meaningful — see that module's docstring on `None`
+    # domains resolving to nothing.
+    system_name = f"finance-system-{uuid4()}"
+    with Session(db_engine) as session:
+        SystemRepository().create(session, name=system_name, domain="FINANCE")
+        session.commit()
+
+    event = make_decision_event(
+        event_id=_unique_event_id(),
+        system_id=system_name,
+        protected_attribute_refs={"race": "Black", "zip_code": "12345"},
+    )
+    evidence_store.append(event, _verdict(event.event_id, str(uuid4())))
+
+    with Session(db_engine) as session:
+        resolutions = ProtectedAttributeResolutionRepository().list_by_decision_event(
+            session, event.event_id
+        )
+
+    by_attribute = {r.attribute_name: r for r in resolutions}
+    assert set(by_attribute) == {
+        "age",
+        "first_name",
+        "gender",
+        "marital_status",
+        "race",
+        "zip_code",
+    }
+    assert by_attribute["race"].classification is ProtectedAttributeClassification.DIRECT
+    assert by_attribute["zip_code"].classification is ProtectedAttributeClassification.PROXIED
+    assert by_attribute["zip_code"].proxy_basis == "race"
+    assert by_attribute["gender"].classification is ProtectedAttributeClassification.WITHHELD
+
+
+def test_append_persists_nothing_for_a_system_with_no_known_domain(
+    evidence_store: EvidenceStore, make_decision_event, db_engine
+) -> None:
+    # The default M0/M1 auto-provisioned system (no `domain` registered)
+    # must be completely unaffected by M2 — this is the acceptance
+    # criterion that the new write is a strict addition, not a regression.
+    event = make_decision_event(
+        event_id=_unique_event_id(), protected_attribute_refs={"country": "India"}
+    )
+    evidence_store.append(event, _verdict(event.event_id, str(uuid4())))
+
+    with Session(db_engine) as session:
+        resolutions = ProtectedAttributeResolutionRepository().list_by_decision_event(
+            session, event.event_id
+        )
+
+    assert resolutions == []
+
+
+def test_append_rolls_back_entirely_when_resolution_rejects_the_event(
+    evidence_store: EvidenceStore, make_decision_event, db_engine
+) -> None:
+    # Production-readiness check: a resolution failure partway through the
+    # transaction (an unrecognized protected attribute for a known domain)
+    # must not leave an orphaned Decision Event with no matching evidence
+    # row -- the whole write is one transaction, or none of it happens.
+    system_name = f"finance-system-{uuid4()}"
+    with Session(db_engine) as session:
+        SystemRepository().create(session, name=system_name, domain="FINANCE")
+        session.commit()
+
+    event = make_decision_event(
+        event_id=_unique_event_id(),
+        system_id=system_name,
+        protected_attribute_refs={"country": "India"},  # not a FINANCE rule
+    )
+
+    with pytest.raises(ValueError):
+        evidence_store.append(event, _verdict(event.event_id, str(uuid4())))
+
+    with Session(db_engine) as session:
+        assert DecisionEventRepository().get(session, event.event_id) is None

@@ -101,3 +101,23 @@ def synthetic_payload_json() -> dict[str, Any]:
         "protected_attributes": {"country": "India"},
         "decision": {"approved": True, "rate": 0.085},
     }
+
+
+@pytest.fixture
+def credit_scorecard_payload_json() -> dict[str, Any]:
+    """M2: a well-formed payload with protected attributes kept properly
+    out of `feature_vector` — the CLEAR case. Tests exercising the
+    `FLAGGED` (direct-attribute-leak) path override `feature_vector`
+    explicitly."""
+    return {
+        "decision_id": "score-001",
+        "applicant_id": "applicant-001",
+        "system_name": "credit-scorecard-prod",
+        "scored_at": "2026-01-01T00:00:00Z",
+        "feature_vector": {"annual_income": 65000.12, "debt_to_income": 0.31},
+        "demographic_indicators": {"race": "Black", "zip_code": "12345"},
+        "model_score": 712.5,
+        "decision_threshold": 650.0,
+        "approved": True,
+        "reason_codes": ["R01"],
+    }

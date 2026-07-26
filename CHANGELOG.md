@@ -5,6 +5,29 @@ grouped by milestone (`ARCH-GOV-002` / `IMPL-GOV-001`), not by release date,
 since this project ships as a sequence of frozen, incremental milestones
 rather than continuous releases.
 
+## [0.3.0-m2] — 2026-07-26 — M2: Protected Attribute Resolution, First Real Adapter & Judgment-Bearing Policy
+
+Formalizes Protected Attribute Resolution (direct/proxied/withheld) and
+ships the platform's first real, non-synthetic adapter (a classical-ML
+credit scorecard) and its first genuinely judgment-bearing policy — one
+that can actually produce `FLAGGED`. Full design rationale, decisions, and
+the production-readiness review: [`docs/milestones/M2.md`](docs/milestones/M2.md).
+
+### Added
+- `schemas/protected_attribute.py` — `ProtectedAttributeClassification` (`DIRECT`/`PROXIED`/`WITHHELD`) and `ResolvedProtectedAttribute`, a value object kept separate from `DecisionEvent` rather than a new field on it.
+- `protected_attributes/` — `ProtectedAttributeResolver` (a concrete service, not a plugin port) and a static, code-defined `FINANCE` classification ruleset.
+- `adapters/credit_scorecard.py` — `CreditScorecardAdapter`, the second real `Adapter` implementation, proving `Adapter[TPayload]`'s port generalizes beyond `SyntheticAdapter`.
+- `policy_engine/policies/direct_attribute_in_inputs.py` — `DirectAttributeInInputsPolicy`, flags a Decision Event when a `DIRECT`-classified protected attribute leaks into the model's own `input_features`. Holds `ProtectedAttributeResolver` as a constructor collaborator; `Policy.evaluate(event) -> Finding`'s signature is unchanged.
+- Migration `0009` and `db/repositories/protected_attribute_resolution.py` — a sixth table/repository, written atomically inside `EvidenceStore.append`'s existing transaction.
+- `POST /v1/ingestion/events/credit-scorecard` — a second ingestion route, its own adapter and independently-policied `GovernanceEngine`, sharing the same `EvidenceStore` and `NormalizationService` as the original, byte-for-byte-unchanged route.
+
+### Fixed
+_(found during this milestone's own production-readiness review, before freeze)_
+- An unrecognized protected attribute (structurally valid, semantically rejected by `ProtectedAttributeResolver`) surfaced as a raw `500` instead of a `422` — fixed with a dedicated `ValueError` exception handler in `api/app.py`, the same client-error category Pydantic's own validation errors already get.
+
+### Deferred
+See `docs/milestones/M2.md` for the full account, including two documented (not fixed) limitations: the policy's fixed `FINANCE` domain can diverge from what `EvidenceStore` actually persists for an auto-provisioned (never pre-registered) system, and domain-name matching is case-sensitive with no normalization. Plugin registry/discovery/sandboxing (M3), policy plurality (M4), the full four-state verdict model (M5), async ingestion (M6), DB-backed classification rules (M3/M5), encryption at rest (M11).
+
 ## [0.2.0-m1] — 2026-07-26 — M1: Postgres Persistence & System Registry, verified
 
 Originally built "CI-verified, locally skip-if-absent" (no Postgres/Docker

@@ -25,6 +25,13 @@ loop, so blocking calls inside one block every other concurrent request on
 that worker; FastAPI runs a plain `def` handler in a threadpool instead,
 which is the correct, minimal fix for a fully-synchronous handler. Found
 during the M0 finalization review — see the production-readiness review.
+
+M2 adds `ingest_credit_scorecard_event`, a second route for the second
+adapter, rather than generalizing this one to dispatch by payload shape —
+see `docs/milestones/M2.md` §11.1. Real adapter registry/discovery so a
+single endpoint can dispatch by `system_id` remains M3 scope; duplicating
+this thin handler per adapter is the correct amount of generality for
+exactly two cases, not a stopgap standing in for the real one.
 """
 
 from __future__ import annotations
@@ -33,9 +40,12 @@ from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
 
 from gov_platform.adapters.base import Adapter
+from gov_platform.adapters.credit_scorecard import CreditScorecardPayload
 from gov_platform.adapters.synthetic import SyntheticSourcePayload
 from gov_platform.api.dependencies import (
     get_adapter,
+    get_credit_scorecard_adapter,
+    get_credit_scorecard_governance_engine,
     get_evidence_store,
     get_governance_engine,
     get_normalization_service,
@@ -65,6 +75,38 @@ def ingest_event(
     evidence_store: EvidenceStore = Depends(get_evidence_store),
 ) -> IngestionResponse:
     """The full M0 vertical slice: adapter -> normalize -> governance -> evidence."""
+    decision_event = adapter.translate(payload)
+    normalized_event = normalization_service.normalize(decision_event)
+    verdict = governance_engine.govern(normalized_event)
+    evidence_record = evidence_store.append(normalized_event, verdict)
+
+    return IngestionResponse(
+        decision_event_id=normalized_event.event_id,
+        verdict_id=verdict.verdict_id,
+        status=verdict.status,
+        evidence_sequence_number=evidence_record.sequence_number,
+        evidence_record_hash=evidence_record.record_hash,
+    )
+
+
+@router.post(
+    "/events/credit-scorecard",
+    response_model=IngestionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def ingest_credit_scorecard_event(
+    payload: CreditScorecardPayload,
+    adapter: Adapter[CreditScorecardPayload] = Depends(get_credit_scorecard_adapter),
+    normalization_service: NormalizationService = Depends(get_normalization_service),
+    governance_engine: GovernanceEngine = Depends(get_credit_scorecard_governance_engine),
+    evidence_store: EvidenceStore = Depends(get_evidence_store),
+) -> IngestionResponse:
+    """The M2 vertical slice for the credit-scorecard adapter: adapter ->
+    normalize -> governance (the direct-attribute-in-inputs policy) ->
+    evidence. Shares `NormalizationService` and `EvidenceStore` with
+    `ingest_event` above — both routes write into the same append-only
+    ledger — but uses its own adapter and its own, independently-policied
+    `GovernanceEngine`."""
     decision_event = adapter.translate(payload)
     normalized_event = normalization_service.normalize(decision_event)
     verdict = governance_engine.govern(normalized_event)

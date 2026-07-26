@@ -1,29 +1,24 @@
-# AI Governance Platform — M1: Postgres Persistence & System Registry
+# AI Governance Platform — M2: Protected Attribute Resolution & First Real Adapter
 
 A domain-agnostic observation-and-evaluation layer for LLM copilots, classical
 ML models, rule engines, and hybrid decision systems. This repository
 implements the frozen V2 architecture (`ARCH-GOV-002`) incrementally, per the
 frozen implementation plan (`IMPL-GOV-001`).
 
-**Current milestone: M1.** Replaces M0's SQLite placeholder with a real
-Postgres operational store and hash-chained evidence ledger, formalizes
-System/ModelVersion entities, and enforces evidence append-only-ness at the
-database-privilege level, not just in application code. See
+**Current milestone: M2.** Formalizes Protected Attribute Resolution
+(direct/proxied/withheld) and ships the platform's first real, non-synthetic
+adapter (a classical-ML credit scorecard) alongside its first genuinely
+judgment-bearing policy — one that can actually produce `FLAGGED` when a
+protected characteristic leaks into a model's own decision inputs. See
 [`docs/architecture-mapping.md`](docs/architecture-mapping.md) for exactly
 what each module does and does not yet do, and
-[`docs/milestones/M1.md`](docs/milestones/M1.md) for the full milestone
+[`docs/milestones/M2.md`](docs/milestones/M2.md) for the full milestone
 report.
 
 > **Do not point this milestone at real applicant/subject data.** The
-> Evidence Store has no encryption at rest and no retention controls yet
-> (M11), and there is still no auth in front of any endpoint (M5+/M13).
-> Synthetic data only.
-
-> **This sandbox has no local Postgres.** M1's persistence layer,
-> migrations, and DB-privilege enforcement are verified in CI (a real
-> Postgres service container), not in this development environment — see
-> "Testing" below and `docs/milestones/M1.md` for what that means in
-> practice.
+> Evidence Store (and the new `protected_attribute_resolutions` table) has
+> no encryption at rest and no retention controls yet (M11), and there is
+> still no auth in front of any endpoint (M5+/M13). Synthetic data only.
 
 Version 1 (a single-domain prototype, superseded by this design) is preserved,
 unmodified, in [`legacy_v1/`](legacy_v1/) for reference.
@@ -90,6 +85,35 @@ unregistered `system_id` by name (see `EvidenceStore`'s module docstring for
 why). Pre-registering gets you the richer `domain`/`risk_tier`/`owner`
 metadata attached instead of a bare name.
 
+**M2's second route**, a realistic classical-ML credit scorecard, governed
+by a policy that actually flags a protected attribute leaking into the
+model's own inputs. Pre-registering the system with `domain: "FINANCE"`
+is what makes `protected_attribute_resolutions` persist anything for
+it — see `docs/milestones/M2.md`'s production-readiness review for why:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/admin/systems \
+  -H "Content-Type: application/json" \
+  -d '{"name": "credit-scorecard-prod", "domain": "FINANCE"}'
+
+curl -X POST http://127.0.0.1:8000/v1/ingestion/events/credit-scorecard \
+  -H "Content-Type: application/json" \
+  -d '{
+        "decision_id": "score-001",
+        "applicant_id": "applicant-001",
+        "system_name": "credit-scorecard-prod",
+        "scored_at": "2026-01-01T00:00:00Z",
+        "feature_vector": {"annual_income": 65000.12, "debt_to_income": 0.31},
+        "demographic_indicators": {"race": "Black", "zip_code": "12345"},
+        "model_score": 712.5,
+        "decision_threshold": 650.0,
+        "approved": true,
+        "reason_codes": ["R01"]
+      }'
+# status: "ALLOW" -- protected attributes stayed out of feature_vector.
+# Move "race" into feature_vector instead and this becomes "FLAGGED".
+```
+
 Verify the evidence hash chain independently at any time:
 
 ```bash
@@ -146,10 +170,12 @@ pre-commit install        # optional: run ruff + mypy on every commit
 src/gov_platform/
   config/              Settings (env-driven)
   observability/       Structured (JSON) logging
-  schemas/             Canonical DecisionEvent, Finding, GovernanceVerdict, System, ModelVersion
-  adapters/            Adapter[TPayload] port + SyntheticAdapter (reference impl)
+  schemas/             Canonical DecisionEvent, Finding, GovernanceVerdict, System, ModelVersion,
+                       ResolvedProtectedAttribute
+  adapters/            Adapter[TPayload] port + SyntheticAdapter, CreditScorecardAdapter
   normalization/       Structural normalization pass
-  policy_engine/       Policy port + AlwaysAllowPolicy (reference impl)
+  protected_attributes/ classification.py (static rules) + resolver.py (ProtectedAttributeResolver)
+  policy_engine/       Policy port + AlwaysAllowPolicy, DirectAttributeInInputsPolicy
   governance_engine/   Wraps a Policy's Finding into a Verdict
   audit/               hash_chain.py (pure), evidence_store.py (Postgres), verify_chain.py
   db/                  session.py, migrate.py, models.py, repositories/
@@ -159,7 +185,7 @@ src/gov_platform/
     dependencies.py    DI providers, typed against ports where ports exist
     middleware.py      MaxBodySizeMiddleware
     health.py          GET /healthz
-    ingestion/         POST /v1/ingestion/events
+    ingestion/         POST /v1/ingestion/events, POST /v1/ingestion/events/credit-scorecard
     admin/             POST/GET /v1/admin/systems
 infra/
   docker/              Dockerfile, docker-compose.yml
@@ -170,21 +196,23 @@ tests/integration/     Full HTTP/DB round-trip tests; most need @requires_postgr
 legacy_v1/             Superseded V1 prototype (reference only, not run)
 ```
 
-## What M1 deliberately does not include
+## What M2 deliberately does not include
 
 Every module has a docstring stating precisely which milestone owns the
-capability it doesn't yet have. The short version: Protected Attribute
-Resolution and a real (non-synthetic) adapter (M2), plugin
+capability it doesn't yet have. The short version: plugin
 registry/discovery/sandboxing (M3), policy plurality (M4), the full
 four-state verdict model with bindings/escalation/signing (M5), async
-ingestion and population-level policies (M6), encryption at rest and
+ingestion and population-level policies (M6), DB-backed/admin-configurable
+protected-attribute classification rules (M3/M5), encryption at rest and
 retention (M11), and comprehensive request-abuse protection beyond the
 `Content-Length` check added during M0's finalization (M13). Building any of
 that now would violate the milestone's own scope.
 
-## What remains for M2
+## What remains for M3
 
-See [`docs/milestones/M1.md`](docs/milestones/M1.md) for the full deferred-
-items table with milestone ownership. In short: M2 formalizes Protected
-Attribute Resolution (direct/proxied/withheld) and ships the first real
-(non-synthetic) adapter and the first genuinely judgment-bearing policy.
+See [`docs/milestones/M2.md`](docs/milestones/M2.md) for the full
+production-readiness review and design record. In short: M3 is the plugin
+architecture — Adapter/Policy registry, discovery, sandboxing, and
+draft/shadow/production promotion — the real generalization of the
+two-adapters/two-routes and two-policies pattern M2 proved works but
+didn't yet generalize.

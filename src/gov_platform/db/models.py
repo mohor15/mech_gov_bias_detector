@@ -87,6 +87,19 @@ class VerdictFindingRow(Base):
     finding_id: Mapped[str] = mapped_column(String, ForeignKey("findings.id"), primary_key=True)
 
 
+class ProtectedAttributeResolutionRow(Base):
+    __tablename__ = "protected_attribute_resolutions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    decision_event_id: Mapped[str] = mapped_column(
+        String, ForeignKey("decision_events.id"), nullable=False
+    )
+    attribute_name: Mapped[str] = mapped_column(String, nullable=False)
+    classification: Mapped[str] = mapped_column(String, nullable=False)
+    proxy_basis: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class EvidenceChainRow(Base):
     __tablename__ = "evidence_chain"
 

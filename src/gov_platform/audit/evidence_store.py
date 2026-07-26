@@ -31,6 +31,16 @@ for the full reasoning; the short version:
   tests) never needs a live database at all. Schema creation is
   `db.migrate`'s job now, not this constructor's — see the M1 design note
   on why that matters for M0's tests staying runnable without Postgres.
+
+M2 adds a sixth table write: `append` resolves the Decision Event's
+protected attributes (architecture §4.3) via `ProtectedAttributeResolver`,
+using the real `System.domain` this transaction already looked up, and
+persists each resolution through `ProtectedAttributeResolutionRepository`
+— same transaction, same advisory-lock section, same atomicity guarantee
+the other five writes already have. A domain with no classification
+ruleset (see `protected_attributes/classification.py`) resolves to an
+empty list, so this is a strict addition: ingestion for systems outside
+any domain M2 governs is unaffected.
 """
 
 from __future__ import annotations
@@ -49,8 +59,12 @@ from gov_platform.db.models import EvidenceChainRow
 from gov_platform.db.repositories.decision_event import DecisionEventRepository
 from gov_platform.db.repositories.finding import FindingRepository
 from gov_platform.db.repositories.model_version import ModelVersionRepository
+from gov_platform.db.repositories.protected_attribute_resolution import (
+    ProtectedAttributeResolutionRepository,
+)
 from gov_platform.db.repositories.system import SystemRepository
 from gov_platform.db.repositories.verdict import VerdictRepository
+from gov_platform.protected_attributes.resolver import ProtectedAttributeResolver
 from gov_platform.schemas.decision_event import DecisionEvent
 from gov_platform.schemas.model_version import UNSPECIFIED_VERSION
 from gov_platform.schemas.verdict import GovernanceVerdict
@@ -78,13 +92,17 @@ class EvidenceRecord(BaseModel):
 class EvidenceStore:
     """Append-only, hash-chained ledger of governed Decision Events."""
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(
+        self, engine: Engine, *, resolver: ProtectedAttributeResolver | None = None
+    ) -> None:
         self._engine = engine
         self._system_repo = SystemRepository()
         self._model_version_repo = ModelVersionRepository()
         self._decision_event_repo = DecisionEventRepository()
         self._finding_repo = FindingRepository()
         self._verdict_repo = VerdictRepository(self._finding_repo)
+        self._protected_attribute_repo = ProtectedAttributeResolutionRepository()
+        self._resolver = resolver or ProtectedAttributeResolver()
 
     def append(self, decision_event: DecisionEvent, verdict: GovernanceVerdict) -> EvidenceRecord:
         """Persist one Decision Event + Verdict pair, atomically, as the
@@ -112,6 +130,10 @@ class EvidenceStore:
             for finding in verdict.findings:
                 self._finding_repo.create(session, finding)
             self._verdict_repo.create(session, verdict)
+
+            resolutions = self._resolver.resolve(decision_event, domain=system.domain)
+            for resolution in resolutions:
+                self._protected_attribute_repo.create(session, resolution)
 
             previous_hash = self._latest_hash(session)
             record_hash = compute_hash(previous_hash, payload_json)

@@ -94,6 +94,91 @@ def test_two_ingested_events_chain_together(
     assert second_record.previous_hash == first_record.record_hash
 
 
+@requires_postgres
+def test_credit_scorecard_ingestion_clears_a_well_formed_event(
+    api_client: TestClient, credit_scorecard_payload_json: dict[str, object]
+) -> None:
+    # M2: the second ingestion route. Protected attributes stay out of
+    # feature_vector in this fixture (see conftest) -- the policy's
+    # intended CLEAR path.
+    payload = dict(credit_scorecard_payload_json)
+    payload["decision_id"] = f"score-{uuid4()}"
+
+    response = api_client.post("/v1/ingestion/events/credit-scorecard", json=payload)
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "ALLOW"
+    assert body["decision_event_id"] == payload["decision_id"]
+    assert len(body["evidence_record_hash"]) == 64
+
+
+@requires_postgres
+def test_credit_scorecard_ingestion_flags_a_direct_attribute_leak(
+    api_client: TestClient, credit_scorecard_payload_json: dict[str, object]
+) -> None:
+    payload = dict(credit_scorecard_payload_json)
+    payload["decision_id"] = f"score-{uuid4()}"
+    feature_vector = dict(payload["feature_vector"])  # type: ignore[arg-type]
+    feature_vector["race"] = 1.0
+    payload["feature_vector"] = feature_vector
+
+    response = api_client.post("/v1/ingestion/events/credit-scorecard", json=payload)
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "FLAGGED"
+
+
+@requires_postgres
+def test_credit_scorecard_and_synthetic_routes_share_one_evidence_chain(
+    api_client: TestClient,
+    synthetic_payload_json: dict[str, object],
+    credit_scorecard_payload_json: dict[str, object],
+) -> None:
+    # Both ingestion routes write into the same append-only ledger -- one
+    # platform-wide chain, not one per adapter (see api/app.py's docstring).
+    store = api_client.app.state.evidence_store  # type: ignore[attr-defined]
+    sequence_before = len(store.all())
+
+    synthetic_payload = _unique_payload(synthetic_payload_json)
+    first = api_client.post("/v1/ingestion/events", json=synthetic_payload)
+
+    scorecard_payload = dict(credit_scorecard_payload_json)
+    scorecard_payload["decision_id"] = f"score-{uuid4()}"
+    second = api_client.post("/v1/ingestion/events/credit-scorecard", json=scorecard_payload)
+
+    assert first.json()["evidence_sequence_number"] == sequence_before + 1
+    assert second.json()["evidence_sequence_number"] == sequence_before + 2
+
+
+@requires_postgres
+def test_credit_scorecard_unrecognized_protected_attribute_returns_422_not_500(
+    api_client: TestClient, credit_scorecard_payload_json: dict[str, object]
+) -> None:
+    # A protected attribute name outside FINANCE's ruleset is structurally
+    # valid (Pydantic never sees anything wrong) but semantically rejected
+    # by ProtectedAttributeResolver -- must surface as a client-correctable
+    # 422, not the generic 500 an unrecognized ValueError would otherwise
+    # get (see api/app.py's ValueError handler).
+    payload = dict(credit_scorecard_payload_json)
+    payload["decision_id"] = f"score-{uuid4()}"
+    payload["demographic_indicators"] = {"nationality": "French"}
+
+    response = api_client.post("/v1/ingestion/events/credit-scorecard", json=payload)
+
+    assert response.status_code == 422
+    assert "nationality" in response.json()["detail"]
+
+
+def test_credit_scorecard_malformed_payload_returns_422_not_500(api_client: TestClient) -> None:
+    response = api_client.post(
+        "/v1/ingestion/events/credit-scorecard", json={"decision_id": "only-one-field"}
+    )
+
+    assert response.status_code == 422
+    assert "internal server error" not in response.text.lower()
+
+
 def test_malformed_payload_returns_422_not_500(api_client: TestClient) -> None:
     response = api_client.post("/v1/ingestion/events", json={"source_event_id": "only-one-field"})
 

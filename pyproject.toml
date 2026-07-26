@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gov-platform"
-version = "0.2.0"
-description = "Domain-agnostic AI Governance Platform (V2) — M1: Postgres persistence & System registry."
+version = "0.3.0"
+description = "Domain-agnostic AI Governance Platform (V2) — M2: Protected Attribute Resolution, first real adapter & judgment-bearing policy."
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [
