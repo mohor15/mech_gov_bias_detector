@@ -6,6 +6,7 @@ that was previously both unfixed and untested.
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -38,7 +39,13 @@ def test_body_within_limit_is_not_rejected_by_the_middleware(
     app = create_app(settings=test_settings)
     client = TestClient(app)
 
-    response = client.post("/v1/ingestion/events", json=synthetic_payload_json)
+    # decision_events.id is a hard, never-truncated primary key (see
+    # test_ingestion_api.py's module docstring) — reusing the fixture's
+    # fixed source_event_id would only pass once per database lifetime.
+    payload = dict(synthetic_payload_json)
+    payload["source_event_id"] = f"evt-{uuid4()}"
+
+    response = client.post("/v1/ingestion/events", json=payload)
 
     assert response.status_code != 413
     assert response.status_code == 201

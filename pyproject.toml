@@ -80,3 +80,17 @@ pythonpath = ["src"]
 [tool.coverage.run]
 source = ["src/gov_platform"]
 branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    # Abstract method bodies (Adapter.translate, Policy.evaluate) exist only
+    # to document the contract; every concrete subclass overrides them
+    # completely and never calls super(), so the `raise` is unreachable by
+    # construction, not untested behavior.
+    "raise NotImplementedError",
+    # Never executes under pytest (modules are imported, not run as scripts);
+    # the CLI behavior it guards (`main()`) is tested directly by calling
+    # `main(argv)`.
+    "if __name__ == .__main__.:",
+]

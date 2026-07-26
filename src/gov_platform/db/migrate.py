@@ -20,6 +20,7 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.engine.url import make_url
 
 _TRACKING_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -64,6 +65,24 @@ def apply_migrations(engine: Engine, migrations_dir: Path) -> list[str]:
     return newly_applied
 
 
+def _with_psycopg_driver(database_url: str) -> str:
+    """Force the `psycopg` (v3) driver for bare `postgresql://`/`postgres://`
+    URLs.
+
+    `ADMIN_DATABASE_URL` is shared with `infra/ci/setup_test_role.py`, which
+    hands it to `psycopg.connect()` directly — that call needs the plain
+    scheme, not a SQLAlchemy dialect suffix, so the shared env var can't
+    just be written as `postgresql+psycopg://`. SQLAlchemy's own default for
+    a bare `postgresql://` is `psycopg2`, which isn't a dependency of this
+    project (only `psycopg` is) and isn't installed, so left unnormalized
+    `create_engine` fails immediately with `ModuleNotFoundError`.
+    """
+    url = make_url(database_url)
+    if url.drivername in ("postgresql", "postgres"):
+        url = url.set(drivername="postgresql+psycopg")
+    return str(url.render_as_string(hide_password=False))
+
+
 def _default_migrations_dir() -> Path:
     # src/gov_platform/db/migrate.py -> repo root -> infra/migrations
     return Path(__file__).resolve().parents[3] / "infra" / "migrations"
@@ -75,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--migrations-dir", type=Path, default=_default_migrations_dir())
     args = parser.parse_args(argv)
 
-    engine = create_engine(args.database_url)
+    engine = create_engine(_with_psycopg_driver(args.database_url))
     applied = apply_migrations(engine, args.migrations_dir)
 
     if applied:

@@ -5,7 +5,22 @@ grouped by milestone (`ARCH-GOV-002` / `IMPL-GOV-001`), not by release date,
 since this project ships as a sequence of frozen, incremental milestones
 rather than continuous releases.
 
-## [0.2.0-m1] — 2026-07-26 — M1: Postgres Persistence & System Registry
+## [0.2.0-m1] — 2026-07-26 — M1: Postgres Persistence & System Registry, verified
+
+Originally built "CI-verified, locally skip-if-absent" (no Postgres/Docker
+in that sandbox); with Docker Desktop and WSL now installed, the milestone
+has been re-verified end to end against a real Postgres 16 container,
+exactly mirroring `.github/workflows/ci.yml`. See
+[`docs/milestones/M1.md`](docs/milestones/M1.md)'s "verified against real
+Postgres" update for the full account.
+
+### Fixed (found only once real Postgres execution became possible)
+- `db/migrate.py`'s `create_engine()` on a bare `postgresql://` URL defaulted to the uninstalled `psycopg2` driver instead of this project's actual dependency, `psycopg` (v3) — migrations could not run at all. Fixed by normalizing the URL's driver inside `migrate.py`.
+- `infra/ci/setup_test_role.py`'s `ALTER ROLE ... PASSWORD %s` was a Postgres syntax error — DDL's `PASSWORD` clause requires a literal, not a bind parameter. Fixed with `psycopg.sql.Literal`.
+- `test_body_within_limit_is_not_rejected_by_the_middleware` reused a fixture with a hardcoded `source_event_id`, unlike every other M1 test file — since `decision_events.id` is a permanent primary key, it could only pass once per database lifetime. Fixed to generate a unique id.
+- Coverage floor (98%) failed at 92% on first real measurement: several genuine, reachable code paths (`DecisionEventRepository.get`, `FindingRepository.list_by_decision_event`, `ModelVersionRepository.get`/`list_by_system`, `VerdictRepository.get`, `verify_chain_from_database`, both CLI `main()` wrappers) had no test coverage. Added integration/unit tests for all of them; added a standard `[tool.coverage.report]` exclusion for the two genuinely-unreachable `abc.abstractmethod` bodies and two `if __name__ == "__main__":` guards. Coverage is now 100%.
+
+## [0.2.0-m1] — 2026-07-26 — M1: Postgres Persistence & System Registry (original)
 
 Replaces M0's SQLite placeholder with a real Postgres operational store and
 hash-chained evidence ledger, formalizes System/ModelVersion entities, and

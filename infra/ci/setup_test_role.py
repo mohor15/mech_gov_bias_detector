@@ -17,16 +17,23 @@ import os
 import sys
 
 import psycopg
+from psycopg import sql
 
 
 def main() -> int:
     admin_url = os.environ["ADMIN_DATABASE_URL"]
     app_password = os.environ["GOV_PLATFORM_APP_PASSWORD"]
 
+    # ALTER ROLE's PASSWORD clause is DDL: Postgres's grammar requires a
+    # string literal there, not a bind parameter, so this can't use a
+    # parameterized query the way a normal DML statement would. sql.Literal
+    # still escapes/quotes the value safely — it's composed client-side into
+    # the statement text, not sent as an untrusted parameter.
     with psycopg.connect(admin_url) as connection:
         connection.execute(
-            "ALTER ROLE gov_platform_app WITH LOGIN PASSWORD %s",
-            (app_password,),
+            sql.SQL("ALTER ROLE gov_platform_app WITH LOGIN PASSWORD {}").format(
+                sql.Literal(app_password)
+            )
         )
         connection.commit()
 

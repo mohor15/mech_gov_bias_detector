@@ -8,10 +8,18 @@ dialect-agnostic; only the migration content targets Postgres specifically.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import create_engine, inspect
 
-from gov_platform.db.migrate import applied_migrations, apply_migrations, discover_migrations
+from gov_platform.db.migrate import (
+    _default_migrations_dir,
+    _with_psycopg_driver,
+    applied_migrations,
+    apply_migrations,
+    discover_migrations,
+    main,
+)
 
 
 def _write_migration(directory: Path, filename: str, sql: str) -> None:
@@ -73,3 +81,49 @@ def test_applied_migrations_reflects_tracking_table(tmp_path: Path) -> None:
 def test_no_pending_migrations_returns_empty_list(tmp_path: Path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
     assert apply_migrations(engine, tmp_path) == []
+
+
+def test_default_migrations_dir_points_at_the_real_migrations_folder() -> None:
+    resolved = _default_migrations_dir()
+
+    assert resolved.name == "migrations"
+    assert (resolved / "0001_create_systems.sql").exists()
+
+
+def test_with_psycopg_driver_rewrites_bare_postgresql_scheme() -> None:
+    assert _with_psycopg_driver("postgresql://u:p@host/db").startswith("postgresql+psycopg://")
+
+
+def test_with_psycopg_driver_rewrites_bare_postgres_scheme() -> None:
+    assert _with_psycopg_driver("postgres://u:p@host/db").startswith("postgresql+psycopg://")
+
+
+def test_with_psycopg_driver_leaves_an_explicit_driver_untouched() -> None:
+    url = "postgresql+psycopg://u:p@host/db"
+    assert _with_psycopg_driver(url) == url
+
+
+def test_main_applies_pending_migrations_and_reports_them(
+    tmp_path: Path, capsys: Any
+) -> None:
+    _write_migration(tmp_path, "0001_create_foo.sql", "CREATE TABLE foo (id INTEGER PRIMARY KEY);")
+    database_url = f"sqlite:///{tmp_path / 'test.db'}"
+
+    exit_code = main(["--database-url", database_url, "--migrations-dir", str(tmp_path)])
+
+    assert exit_code == 0
+    assert "Applied 1 migration(s): 0001_create_foo.sql" in capsys.readouterr().out
+
+
+def test_main_reports_no_pending_migrations_on_a_second_run(
+    tmp_path: Path, capsys: Any
+) -> None:
+    _write_migration(tmp_path, "0001_create_foo.sql", "CREATE TABLE foo (id INTEGER PRIMARY KEY);")
+    database_url = f"sqlite:///{tmp_path / 'test.db'}"
+    main(["--database-url", database_url, "--migrations-dir", str(tmp_path)])
+    capsys.readouterr()
+
+    exit_code = main(["--database-url", database_url, "--migrations-dir", str(tmp_path)])
+
+    assert exit_code == 0
+    assert "No pending migrations." in capsys.readouterr().out
