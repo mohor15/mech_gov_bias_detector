@@ -11,27 +11,42 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from gov_platform.api.app import create_app
-from gov_platform.api.dependencies import get_governance_engine
+from gov_platform.api.dependencies import get_evidence_store
+from gov_platform.audit.evidence_store import EvidenceRecord
 from gov_platform.config.settings import Settings
 from gov_platform.schemas.decision_event import DecisionEvent
 from gov_platform.schemas.verdict import GovernanceVerdict
+from tests.conftest import requires_postgres
 
 
-class _ExplodingGovernanceEngine:
-    """Test double: simulates an unexpected failure deep in the pipeline."""
+class _ExplodingEvidenceStore:
+    """Test double: simulates an unexpected failure deep in the pipeline.
 
-    def govern(self, event: DecisionEvent) -> GovernanceVerdict:
+    M3: `GovernanceEngine` is no longer a shared, overridable app.state
+    singleton — each generated ingestion route constructs its own
+    per-request policy instance from the plugin registry (see
+    `api/ingestion/routes.py`). `EvidenceStore` is still the one shared,
+    `Depends`-injected collaborator every successful ingestion reaches,
+    so it's the equivalent injection point for "an unexpected failure
+    deep in the pipeline" now.
+    """
+
+    def append(self, event: DecisionEvent, verdict: GovernanceVerdict) -> EvidenceRecord:
         raise RuntimeError("simulated unexpected failure")
 
 
+@requires_postgres
 def test_unhandled_exception_returns_generic_500_not_a_traceback(
     test_settings: Settings, synthetic_payload_json: dict[str, Any]
 ) -> None:
+    # Needs Postgres: the handler's plugin-registration lookups (is this
+    # adapter/policy PRODUCTION?) must succeed before EvidenceStore.append
+    # is ever reached for the injected failure to actually fire.
     app = create_app(settings=test_settings)
-    app.dependency_overrides[get_governance_engine] = lambda: _ExplodingGovernanceEngine()
+    app.dependency_overrides[get_evidence_store] = lambda: _ExplodingEvidenceStore()
 
     client = TestClient(app, raise_server_exceptions=False)
-    response = client.post("/v1/ingestion/events", json=synthetic_payload_json)
+    response = client.post("/v1/ingestion/events/synthetic", json=synthetic_payload_json)
 
     assert response.status_code == 500
     assert response.json() == {"detail": "internal server error"}

@@ -11,11 +11,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from gov_platform.plugins.registry import register_policy
 from gov_platform.policy_engine.base import Policy
 from gov_platform.schemas.decision_event import DecisionEvent
 from gov_platform.schemas.finding import Finding, FindingOutcome
 
 
+@register_policy
 class AlwaysAllowPolicy(Policy):
     policy_id = "always-allow"
     version = "0.1.0"

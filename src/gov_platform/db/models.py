@@ -100,6 +100,35 @@ class ProtectedAttributeResolutionRow(Base):
     resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class PluginRegistrationRow(Base):
+    __tablename__ = "plugin_registrations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    plugin_type: Mapped[str] = mapped_column(String, nullable=False)
+    plugin_id: Mapped[str] = mapped_column(String, nullable=False)
+    version: Mapped[str] = mapped_column(String, nullable=False)
+    lifecycle_state: Mapped[str] = mapped_column(String, nullable=False)
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ShadowFindingRow(Base):
+    __tablename__ = "shadow_findings"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    decision_event_id: Mapped[str] = mapped_column(
+        String, ForeignKey("decision_events.id"), nullable=False
+    )
+    plugin_registration_id: Mapped[str] = mapped_column(
+        String, ForeignKey("plugin_registrations.id"), nullable=False
+    )
+    outcome: Mapped[str] = mapped_column(String, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    metric_values: Mapped[str] = mapped_column(Text, nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class EvidenceChainRow(Base):
     __tablename__ = "evidence_chain"
 

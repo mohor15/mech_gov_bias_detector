@@ -1,24 +1,24 @@
-# AI Governance Platform — M2: Protected Attribute Resolution & First Real Adapter
+# AI Governance Platform — M3: Plugin Registry, Lifecycle & Sandboxing
 
 A domain-agnostic observation-and-evaluation layer for LLM copilots, classical
 ML models, rule engines, and hybrid decision systems. This repository
 implements the frozen V2 architecture (`ARCH-GOV-002`) incrementally, per the
 frozen implementation plan (`IMPL-GOV-001`).
 
-**Current milestone: M2.** Formalizes Protected Attribute Resolution
-(direct/proxied/withheld) and ships the platform's first real, non-synthetic
-adapter (a classical-ML credit scorecard) alongside its first genuinely
-judgment-bearing policy — one that can actually produce `FLAGGED` when a
-protected characteristic leaks into a model's own decision inputs. See
+**Current milestone: M3.** Replaces M2's two hand-wired adapter/policy pairs
+with a real plugin registry: adapters and policies are registered with a
+`draft`/`shadow`/`production` lifecycle, ingestion routes are generated from
+whatever is registered (not hand-written per adapter), and every plugin call
+runs under a timeout + exception-isolating sandbox. See
 [`docs/architecture-mapping.md`](docs/architecture-mapping.md) for exactly
 what each module does and does not yet do, and
-[`docs/milestones/M2.md`](docs/milestones/M2.md) for the full milestone
+[`docs/milestones/M3.md`](docs/milestones/M3.md) for the full milestone
 report.
 
 > **Do not point this milestone at real applicant/subject data.** The
-> Evidence Store (and the new `protected_attribute_resolutions` table) has
-> no encryption at rest and no retention controls yet (M11), and there is
-> still no auth in front of any endpoint (M5+/M13). Synthetic data only.
+> Evidence Store (and `protected_attribute_resolutions`) has no encryption
+> at rest and no retention controls yet (M11), and there is still no auth in
+> front of any endpoint (M5+/M13). Synthetic data only.
 
 Version 1 (a single-domain prototype, superseded by this design) is preserved,
 unmodified, in [`legacy_v1/`](legacy_v1/) for reference.
@@ -49,10 +49,30 @@ python -m gov_platform.db.migrate --database-url "postgresql://postgres:<passwor
 
 Then enable the restricted application role migration `0008` creates
 (NOLOGIN by design — see that migration's comments) with a real,
-secret-managed password, and point the app at it:
+secret-managed password:
 
 ```bash
 export GOV_PLATFORM_DATABASE_URL="postgresql+psycopg://gov_platform_app:<password>@localhost:5432/gov_platform"
+```
+
+**New in M3, and required before ingestion will accept anything**: seed the
+plugin registry. Ingestion routes are generated from whichever adapters
+this process's code has registered (`plugins/bootstrap.py`), but each one
+rejects real traffic until its lifecycle state reaches `PRODUCTION` — a
+fresh database has no plugin registrations at all yet, the same way it has
+no migrations applied until you run them:
+
+```bash
+python -m gov_platform.plugins.seed_registry --database-url "$GOV_PLATFORM_DATABASE_URL"
+# ADAPTER synthetic 0.1.0: promoted to PRODUCTION
+# ADAPTER credit-scorecard 0.1.0: promoted to PRODUCTION
+# POLICY always-allow 0.1.0: promoted to PRODUCTION
+# POLICY direct-attribute-in-inputs 0.1.0: promoted to PRODUCTION
+```
+
+Now start the app:
+
+```bash
 uvicorn gov_platform.api.asgi:app --reload
 ```
 
@@ -66,7 +86,7 @@ curl -X POST http://127.0.0.1:8000/v1/admin/systems \
   -H "Content-Type: application/json" \
   -d '{"name": "synthetic-scorecard", "domain": "FINANCE"}'
 
-curl -X POST http://127.0.0.1:8000/v1/ingestion/events \
+curl -X POST http://127.0.0.1:8000/v1/ingestion/events/synthetic \
   -H "Content-Type: application/json" \
   -d '{
         "source_event_id": "evt-001",
@@ -85,7 +105,7 @@ unregistered `system_id` by name (see `EvidenceStore`'s module docstring for
 why). Pre-registering gets you the richer `domain`/`risk_tier`/`owner`
 metadata attached instead of a bare name.
 
-**M2's second route**, a realistic classical-ML credit scorecard, governed
+**The credit scorecard route** — a realistic classical-ML adapter, governed
 by a policy that actually flags a protected attribute leaking into the
 model's own inputs. Pre-registering the system with `domain: "FINANCE"`
 is what makes `protected_attribute_resolutions` persist anything for
@@ -112,6 +132,15 @@ curl -X POST http://127.0.0.1:8000/v1/ingestion/events/credit-scorecard \
       }'
 # status: "ALLOW" -- protected attributes stayed out of feature_vector.
 # Move "race" into feature_vector instead and this becomes "FLAGGED".
+```
+
+**Managing the plugin registry** — list what's registered, or promote a
+`DRAFT`/`SHADOW` candidate one lifecycle stage:
+
+```bash
+curl http://127.0.0.1:8000/v1/admin/plugins
+
+curl -X POST http://127.0.0.1:8000/v1/admin/plugins/<registration-id>/promote
 ```
 
 Verify the evidence hash chain independently at any time:
@@ -155,6 +184,13 @@ export POSTGRES_URL="postgresql+psycopg://gov_platform_app:<password>@localhost:
 pytest --cov-fail-under=98   # the coverage floor only means something with POSTGRES_URL set
 ```
 
+You do **not** need to run `plugins.seed_registry` separately before
+`pytest`: a session-scoped, autouse fixture (`tests/conftest._seed_plugin_registry`)
+seeds the four first-party plugins to `PRODUCTION` automatically whenever
+`POSTGRES_URL` is set, since essentially every ingestion-route test now
+depends on it. Real deployments (and the Docker smoke test below) do need
+the explicit CLI step — there's no pytest fixture running there.
+
 CI always sets `POSTGRES_URL` (a real Postgres 16 service container) and
 enforces the coverage floor there — see `.github/workflows/ci.yml`.
 
@@ -171,22 +207,25 @@ src/gov_platform/
   config/              Settings (env-driven)
   observability/       Structured (JSON) logging
   schemas/             Canonical DecisionEvent, Finding, GovernanceVerdict, System, ModelVersion,
-                       ResolvedProtectedAttribute
-  adapters/            Adapter[TPayload] port + SyntheticAdapter, CreditScorecardAdapter
+                       ResolvedProtectedAttribute, PluginRegistration
+  adapters/            Adapter[TPayload] port (+ adapter_id/version/governing_policy_id identity)
+                       + SyntheticAdapter, CreditScorecardAdapter
   normalization/       Structural normalization pass
   protected_attributes/ classification.py (static rules) + resolver.py (ProtectedAttributeResolver)
   policy_engine/       Policy port + AlwaysAllowPolicy, DirectAttributeInInputsPolicy
   governance_engine/   Wraps a Policy's Finding into a Verdict
+  plugins/             registry.py (in-process catalog), bootstrap.py (first-party imports),
+                       sandbox.py (timeout + exception isolation), seed_registry.py (CLI)
   audit/               hash_chain.py (pure), evidence_store.py (Postgres), verify_chain.py
   db/                  session.py, migrate.py, models.py, repositories/
   api/
-    app.py             Composition root
+    app.py             Composition root -- builds routes from the plugin registry
     asgi.py            The only module that constructs the default instance
     dependencies.py    DI providers, typed against ports where ports exist
     middleware.py      MaxBodySizeMiddleware
     health.py          GET /healthz
-    ingestion/         POST /v1/ingestion/events, POST /v1/ingestion/events/credit-scorecard
-    admin/             POST/GET /v1/admin/systems
+    ingestion/         Registry-generated: one route per registered adapter
+    admin/             POST/GET /v1/admin/systems, POST/GET/promote /v1/admin/plugins
 infra/
   docker/              Dockerfile, docker-compose.yml
   migrations/          Numbered, Postgres-targeting .sql files
@@ -196,23 +235,24 @@ tests/integration/     Full HTTP/DB round-trip tests; most need @requires_postgr
 legacy_v1/             Superseded V1 prototype (reference only, not run)
 ```
 
-## What M2 deliberately does not include
+## What M3 deliberately does not include
 
 Every module has a docstring stating precisely which milestone owns the
-capability it doesn't yet have. The short version: plugin
-registry/discovery/sandboxing (M3), policy plurality (M4), the full
-four-state verdict model with bindings/escalation/signing (M5), async
-ingestion and population-level policies (M6), DB-backed/admin-configurable
-protected-attribute classification rules (M3/M5), encryption at rest and
-retention (M11), and comprehensive request-abuse protection beyond the
-`Content-Length` check added during M0's finalization (M13). Building any of
-that now would violate the milestone's own scope.
+capability it doesn't yet have. The short version: policy plurality (M4),
+the full four-state verdict model with bindings/escalation/signing (M5),
+async ingestion and population-level policies (M6), DB-backed/admin-
+configurable protected-attribute classification rules (M5), real OS-level
+plugin isolation beyond the timeout/exception sandbox (no milestone named
+yet — see `docs/milestones/M3.md` §13.1), encryption at rest and retention
+(M11), and comprehensive request-abuse protection beyond the `Content-Length`
+check added during M0's finalization (M13). Building any of that now would
+violate the milestone's own scope.
 
-## What remains for M3
+## What remains for M4
 
-See [`docs/milestones/M2.md`](docs/milestones/M2.md) for the full
-production-readiness review and design record. In short: M3 is the plugin
-architecture — Adapter/Policy registry, discovery, sandboxing, and
-draft/shadow/production promotion — the real generalization of the
-two-adapters/two-routes and two-policies pattern M2 proved works but
-didn't yet generalize.
+See [`docs/milestones/M3.md`](docs/milestones/M3.md) for the full
+production-readiness review and design record. In short: M4 is policy
+plurality — multiple policies whose Findings all genuinely contribute to
+one Verdict, with disagreement aggregated and surfaced, not the
+never-affects-the-Verdict side channel M3's shadow execution deliberately
+is.

@@ -27,9 +27,7 @@ def test_unknown_domain_string_also_resolves_to_nothing(make_decision_event) -> 
 
 
 def test_finance_domain_classifies_direct_proxied_and_withheld(make_decision_event) -> None:
-    event = make_decision_event(
-        protected_attribute_refs={"race": "Black", "zip_code": "12345"}
-    )
+    event = make_decision_event(protected_attribute_refs={"race": "Black", "zip_code": "12345"})
 
     resolutions = ProtectedAttributeResolver().resolve(event, domain="FINANCE")
 
@@ -72,9 +70,7 @@ def test_fully_withheld_event_produces_a_withheld_row_for_every_expected_attribu
     resolutions = ProtectedAttributeResolver().resolve(event, domain="FINANCE")
 
     assert len(resolutions) == 6
-    assert all(
-        r.classification is ProtectedAttributeClassification.WITHHELD for r in resolutions
-    )
+    assert all(r.classification is ProtectedAttributeClassification.WITHHELD for r in resolutions)
 
 
 def test_unrecognized_attribute_for_a_known_domain_raises(make_decision_event) -> None:

@@ -30,6 +30,7 @@ from datetime import UTC, datetime
 from pydantic import BaseModel, Field
 
 from gov_platform.adapters.base import Adapter
+from gov_platform.plugins.registry import register_adapter
 from gov_platform.schemas.decision_event import DecisionEvent
 
 
@@ -50,13 +51,21 @@ class CreditScorecardPayload(BaseModel):
     reason_codes: list[str] = Field(default_factory=list)
 
 
+@register_adapter
 class CreditScorecardAdapter(Adapter[CreditScorecardPayload]):
     """The second, real `Adapter` implementation — not a stand-in for a
     live external integration (there is none to connect to yet), but a
     genuinely different, realistically-shaped wire format, proving
     `Adapter[TPayload]`'s port generalizes beyond `SyntheticAdapter`, the
     one case it was built and tested against through M0/M1.
+
+    `governing_policy_id="direct-attribute-in-inputs"`: retrofitted into
+    the M3 registry unchanged from its M2 pairing.
     """
+
+    adapter_id = "credit-scorecard"
+    version = "0.1.0"
+    governing_policy_id = "direct-attribute-in-inputs"
 
     def translate(self, raw_payload: CreditScorecardPayload) -> DecisionEvent:
         return DecisionEvent(

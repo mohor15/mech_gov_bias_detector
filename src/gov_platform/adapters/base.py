@@ -19,6 +19,25 @@ instead of an abstraction that accepts anything. This was tightened during
 the M0 finalization review — see the production-readiness review for
 rationale — and costs nothing extra for M3's future adapters, each of which
 will parameterize `Adapter` with its own payload type the same way.
+
+M3 adds three identity class attributes — `adapter_id`, `version`,
+`governing_policy_id` — mirroring `Policy`'s existing `policy_id`/`version`.
+`translate`'s signature is completely unchanged; this is metadata *about*
+an adapter, not a new capability *of* one:
+
+* `adapter_id`/`version` let `plugins.registry` catalog this
+  implementation and let the M3 registry track its lifecycle state
+  (draft/shadow/production) without any code change to this class.
+* `governing_policy_id` names which `Policy.policy_id` family decides
+  `FLAGGED`/`CLEAR` for events this adapter produces. This exists because
+  `Policy.evaluate(event) -> Finding` deliberately has no database access
+  (see `docs/milestones/M3.md` §9) and so cannot look up which policy
+  should govern a given event dynamically — the association has to live
+  somewhere static, and the adapter (which already encodes "this is a
+  FINANCE-domain credit scorecard," for example) is the natural place for
+  it, not a new binding table (that richer "which policy for which
+  domain/jurisdiction" concept is explicitly M5's Policy Bindings, not
+  this).
 """
 
 from __future__ import annotations
@@ -33,6 +52,10 @@ TPayload = TypeVar("TPayload")
 
 class Adapter(ABC, Generic[TPayload]):
     """Translates a source system's native payload into a `DecisionEvent`."""
+
+    adapter_id: str
+    version: str
+    governing_policy_id: str
 
     @abstractmethod
     def translate(self, raw_payload: TPayload) -> DecisionEvent:

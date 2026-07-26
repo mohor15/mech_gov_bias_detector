@@ -10,6 +10,15 @@ assertions are relative (state-before + expected delta), not absolute
 CI run with no truncation between tests, same reasoning as
 `test_evidence_store_postgres.py`. Every test also uses a unique
 source_event_id, since `decision_events.id` is a hard primary key now.
+
+M3 update: the synthetic adapter's route moved from bare
+`/v1/ingestion/events` to `/v1/ingestion/events/synthetic` — registry-
+generated routes use one consistent `/events/{adapter_id}` scheme for
+every adapter, including this one (see `api/ingestion/routes.py`'s module
+docstring and `docs/milestones/M3.md` §11.1's dispatch decision). The
+malformed-input tests below don't need `@requires_postgres` even after
+this change: Pydantic validates the request body before the handler (and
+its database lookups) ever runs.
 """
 
 from __future__ import annotations
@@ -42,7 +51,7 @@ def test_ingest_event_returns_allow_verdict_and_evidence_reference(
     sequence_before = len(store.all())
 
     payload = _unique_payload(synthetic_payload_json)
-    response = api_client.post("/v1/ingestion/events", json=payload)
+    response = api_client.post("/v1/ingestion/events/synthetic", json=payload)
 
     assert response.status_code == 201
     body = response.json()
@@ -61,7 +70,7 @@ def test_ingest_event_writes_one_evidence_record_with_valid_chain(
     expected_previous_hash = tail_before[-1].record_hash if tail_before else "0" * 64
 
     payload = _unique_payload(synthetic_payload_json)
-    response = api_client.post("/v1/ingestion/events", json=payload)
+    response = api_client.post("/v1/ingestion/events/synthetic", json=payload)
     body = response.json()
 
     records = store.all()
@@ -78,10 +87,10 @@ def test_two_ingested_events_chain_together(
     api_client: TestClient, synthetic_payload_json: dict[str, object]
 ) -> None:
     first_payload = _unique_payload(synthetic_payload_json)
-    first = api_client.post("/v1/ingestion/events", json=first_payload)
+    first = api_client.post("/v1/ingestion/events/synthetic", json=first_payload)
 
     second_payload = _unique_payload(synthetic_payload_json)
-    second = api_client.post("/v1/ingestion/events", json=second_payload)
+    second = api_client.post("/v1/ingestion/events/synthetic", json=second_payload)
 
     assert second.json()["evidence_sequence_number"] == first.json()["evidence_sequence_number"] + 1
 
@@ -141,7 +150,7 @@ def test_credit_scorecard_and_synthetic_routes_share_one_evidence_chain(
     sequence_before = len(store.all())
 
     synthetic_payload = _unique_payload(synthetic_payload_json)
-    first = api_client.post("/v1/ingestion/events", json=synthetic_payload)
+    first = api_client.post("/v1/ingestion/events/synthetic", json=synthetic_payload)
 
     scorecard_payload = dict(credit_scorecard_payload_json)
     scorecard_payload["decision_id"] = f"score-{uuid4()}"
@@ -180,13 +189,15 @@ def test_credit_scorecard_malformed_payload_returns_422_not_500(api_client: Test
 
 
 def test_malformed_payload_returns_422_not_500(api_client: TestClient) -> None:
-    response = api_client.post("/v1/ingestion/events", json={"source_event_id": "only-one-field"})
+    response = api_client.post(
+        "/v1/ingestion/events/synthetic", json={"source_event_id": "only-one-field"}
+    )
 
     assert response.status_code == 422
     assert "internal server error" not in response.text.lower()
 
 
 def test_empty_body_returns_422(api_client: TestClient) -> None:
-    response = api_client.post("/v1/ingestion/events", json={})
+    response = api_client.post("/v1/ingestion/events/synthetic", json={})
 
     assert response.status_code == 422

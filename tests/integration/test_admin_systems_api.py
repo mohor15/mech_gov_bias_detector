@@ -83,7 +83,7 @@ def test_ingestion_reuses_a_pre_registered_system(
     payload = dict(synthetic_payload_json)
     payload["source_event_id"] = f"evt-{uuid4()}"
     payload["source_system"] = name
-    ingest_response = api_client.post("/v1/ingestion/events", json=payload)
+    ingest_response = api_client.post("/v1/ingestion/events/synthetic", json=payload)
     assert ingest_response.status_code == 201
 
     systems_after = api_client.get("/v1/admin/systems").json()

@@ -1,27 +1,67 @@
-# Architecture → Module Mapping (M2)
+# Architecture → Module Mapping (M3)
 
 Onboarding reference: which `ARCH-GOV-002` component each module implements,
 and the precise boundary as of this milestone — what's real today vs. what's
 deferred and to which milestone. Read alongside each module's own docstring,
 which is the authoritative source; this table is the map, not the territory.
 
-| Architecture component (§) | Module | Status as of M2 |
+| Architecture component (§) | Module | Status as of M3 |
 |---|---|---|
-| §4.1 Ingestion Gateway & Adapter Framework | `adapters/base.py`, `adapters/synthetic.py`, `adapters/credit_scorecard.py` | Real, generic (`Adapter[TPayload]`) port + **two** implementations as of M2 (`SyntheticAdapter`, `CreditScorecardAdapter`), each behind its own ingestion route. Registry/discovery so one endpoint can dispatch by `system_id` is still M3. |
-| §4.2 Normalization Service & Canonical Decision Event | `schemas/decision_event.py`, `normalization/service.py` | Real, minimal canonical schema; structural normalization only (whitespace, timezone, precision) — unchanged by M2. |
-| §4.3 Protected Attribute Resolution Service | `schemas/protected_attribute.py`, `protected_attributes/classification.py`, `protected_attributes/resolver.py` | **M2: real.** Classifies each of a domain's expected protected attributes as `DIRECT`/`PROXIED`/`WITHHELD` (a concrete service, not a plugin port — see `docs/milestones/M2.md` §7). Rules are static code, scoped to one domain (`FINANCE`); DB-backed, admin-configurable rules remain a named future item (M3/M5). |
-| §6 Plugin Architecture | `adapters/base.py`, `policy_engine/base.py` | The two ports exist, unchanged by M2 (`ProtectedAttributeResolver` is deliberately not a third one). Sandboxing, discovery, and draft/shadow/production promotion states are M3. |
-| §7 Policy Engine | `policy_engine/base.py`, `policy_engine/policies/always_allow.py`, `policy_engine/policies/direct_attribute_in_inputs.py` | Real port + **two** reference policies as of M2. `DirectAttributeInInputsPolicy` is the first that can actually produce `FLAGGED`, and the first with a constructor dependency (`ProtectedAttributeResolver`) — `Policy.evaluate(event) -> Finding`'s signature is unchanged. Policy plurality and disagreement surfacing are M4; population-level policies are M6/M8. |
-| §8 Governance Engine | `governance_engine/engine.py`, `schemas/verdict.py` | Wraps exactly one Policy's Finding into a Verdict. Bindings, the full four-state model, escalation, and signing are M5. |
+| §4.1 Ingestion Gateway & Adapter Framework | `adapters/base.py`, `adapters/synthetic.py`, `adapters/credit_scorecard.py` | Real, generic (`Adapter[TPayload]`) port + two implementations, both retrofitted into the M3 plugin registry. Ingestion routes are now **generated** from whichever adapters are registered (`api/ingestion/routes.py`), not hand-written per adapter. |
+| §4.2 Normalization Service & Canonical Decision Event | `schemas/decision_event.py`, `normalization/service.py` | Real, minimal canonical schema; structural normalization only (whitespace, timezone, precision) — unchanged by M3. |
+| §4.3 Protected Attribute Resolution Service | `schemas/protected_attribute.py`, `protected_attributes/classification.py`, `protected_attributes/resolver.py` | Classifies each of a domain's expected protected attributes as `DIRECT`/`PROXIED`/`WITHHELD` (a concrete service, not a plugin port). Rules are static code, scoped to one domain (`FINANCE`); DB-backed, admin-configurable rules remain a named future item — **M5**, confirmed in M3's design review (M3's own registry is about plugin identity/lifecycle, not internal policy parameterization). |
+| §6 Plugin Architecture | `adapters/base.py`, `policy_engine/base.py`, `plugins/registry.py`, `plugins/bootstrap.py`, `plugins/sandbox.py`, `schemas/plugin_registration.py`, `db/repositories/plugin_registration.py`, `api/admin/plugins.py` | **M3: real.** In-process registry (what code exists) + database-backed lifecycle state (draft/shadow/production, admin-controlled via API, no redeploy needed) + a timeout/exception-isolation sandbox around every plugin call. `Adapter`/`Policy` remain the only two ports — the registry is a concrete service on top of them, not a third port. Real OS-level plugin isolation beyond timeout/exception isolation has no milestone assigned yet (see `docs/milestones/M3.md` §13.1). |
+| §7 Policy Engine | `policy_engine/base.py`, `policy_engine/policies/always_allow.py`, `policy_engine/policies/direct_attribute_in_inputs.py` | Real port + two reference policies, both retrofitted into the registry. `Policy.evaluate(event) -> Finding`'s signature is unchanged by M3 — shadow execution (below) is deliberately not a widening of this contract. Policy plurality and disagreement surfacing are M4; population-level policies are M6/M8. |
+| §8 Governance Engine | `governance_engine/engine.py`, `schemas/verdict.py` | Wraps exactly one Policy's Finding into a Verdict — unchanged by M3. A `SHADOW`-state policy's Finding is evaluated and persisted to `shadow_findings` by the ingestion route directly (not via `GovernanceEngine`, which never learns shadow execution exists); it never reaches this class or the served Verdict. Bindings, the full four-state model, escalation, and signing are M5. |
 | §9 Monitoring | `observability/logging.py` | Structured logging only. System/governance-health metrics and dashboards are M7 — hence the separate, narrower `observability` package rather than `monitoring`. |
 | §10 Evaluation Framework | *(not yet built)* | M8. |
 | §11 Compliance Dashboard | *(not yet built)* | M10. |
 | §12 Human Review Workflow | *(not yet built)* | M9. |
-| §13 Audit System | `audit/hash_chain.py`, `audit/evidence_store.py`, `audit/verify_chain.py` | **M1: real hash-chained Postgres ledger, append-only enforced at the database-privilege level** (`infra/migrations/0008_...`), plus a standalone chain-verification job/CLI. Concurrency uses `pg_advisory_xact_lock`, replacing M0's in-process lock — correct across multiple app instances, not just within one process. Retention tiers and privilege classification remain M11. |
+| §13 Audit System | `audit/hash_chain.py`, `audit/evidence_store.py`, `audit/verify_chain.py` | Real hash-chained Postgres ledger, append-only enforced at the database-privilege level, plus a standalone chain-verification job/CLI. Unchanged by M3 — `shadow_findings` is a deliberately separate table, never touching the evidence chain. Retention tiers and privilege classification remain M11. |
 | §14 Reporting | *(not yet built)* | M12. |
-| §15 APIs | `api/health.py`, `api/ingestion/routes.py`, `api/admin/systems.py`, `api/app.py`, `api/asgi.py` | Ingestion API now has **two routes** (`/v1/ingestion/events`, `/v1/ingestion/events/credit-scorecard` — new in M2, one per adapter) + Admin API for System registration (M1). Advisory, Config (beyond System), Query/Reporting, and Webhook APIs arrive with the milestones that give them something to expose. `app.py` is the side-effect-free factory; `asgi.py` is the only module that actually constructs the default instance. |
-| §16 Database Design | `db/session.py`, `db/models.py`, `db/migrate.py`, `db/repositories/`, `schemas/system.py`, `schemas/model_version.py`, `schemas/protected_attribute.py` | Real Postgres, formalized via numbered `.sql` migrations (schema authority) + a repository layer per entity (System, ModelVersion, DecisionEvent, Finding, Verdict, and **ProtectedAttributeResolution, new in M2**). SQLAlchemy models are query-time mappings only — never used to generate DDL, so there is exactly one source of schema truth. Multi-tenancy and the analytical-warehouse split remain later milestones. |
+| §15 APIs | `api/health.py`, `api/ingestion/routes.py`, `api/admin/systems.py`, `api/admin/plugins.py`, `api/app.py`, `api/asgi.py` | Ingestion routes are registry-generated (one per registered adapter — currently `synthetic` and `credit-scorecard`, same URL scheme as M2 but no longer hand-written). **New in M3**: the Plugin Registry Admin API (`register`/`list`/`get`/`promote`), alongside System registration (M1). Advisory, Config (beyond System/Plugins), Query/Reporting, and Webhook APIs arrive with the milestones that give them something to expose. `app.py` is the side-effect-free factory; `asgi.py` is the only module that actually constructs the default instance. |
+| §16 Database Design | `db/session.py`, `db/models.py`, `db/migrate.py`, `db/repositories/`, `schemas/system.py`, `schemas/model_version.py`, `schemas/protected_attribute.py`, `schemas/plugin_registration.py` | Real Postgres, formalized via numbered `.sql` migrations (schema authority) + a repository layer per entity, now including **`PluginRegistration` and shadow-Finding persistence, new in M3** (migration `0010`). SQLAlchemy models are query-time mappings only — never used to generate DDL, so there is exactly one source of schema truth. Multi-tenancy and the analytical-warehouse split remain later milestones. |
 | §17 Deployment Architecture | `infra/docker/` | Single container, single service; assumes an external Postgres. Multi-plane topology, multi-tenancy, and mTLS are M13. |
+
+## M3-specific notes
+
+- **Route existence vs. route behavior — two different DB-dependency
+  rules, deliberately.** `api/ingestion/routes.py`'s
+  `build_ingestion_router()` generates routes from the **in-process**
+  plugin registry only (`plugins.bootstrap`'s imports) — zero database
+  access, preserving the invariant every milestone since M0 has relied on
+  (`create_app()` needs no live database). Which policy actually governs
+  a given request (`PRODUCTION` vs `SHADOW`) is resolved **fresh from the
+  database on every request**, inside the generated handler — so
+  promoting/demoting a plugin via the Admin API takes effect on the very
+  next request, no restart needed. Don't conflate the two: a route can
+  exist and still reject traffic with a `503` if its adapter or policy
+  isn't actually `PRODUCTION` yet.
+- **A never-registered adapter and an explicit `DRAFT` registration are
+  rejected identically.** Both mean "not accepting production traffic
+  yet" from the caller's perspective — a `503`, not a `404` (the route
+  itself genuinely exists; it's just not live).
+- **Adapter-level `SHADOW` has no distinct meaning from `PRODUCTION` yet.**
+  Both fully process and persist real traffic identically. The
+  meaningful `SHADOW` distinction M3 actually delivers is for
+  **policies** — evaluated against real traffic, persisted to
+  `shadow_findings`, never affecting the served Verdict. Extending
+  shadow semantics to adapters (e.g., processing real traffic without
+  committing evidence) is a reasonable future enhancement, not built now.
+- **Sandboxing is a soft timeout + exception isolation, not process/
+  container isolation** — a deliberate scope decision (see
+  `docs/milestones/M3.md` §13.1), because there is no untrusted
+  third-party plugin author yet. A plugin that hangs forever still
+  consumes a background thread forever; the caller just stops waiting
+  for it. Read `plugins/sandbox.py`'s docstring before assuming this
+  provides security isolation — it does not.
+- **`create`/`promote` on the plugin registry translate a real database
+  race into a clean `ValueError`, but not symmetrically with the Admin
+  API's own pre-checks** — see `docs/milestones/M3.md`'s production-
+  readiness review for the accepted `409` vs `422` inconsistency this
+  leaves, and why the `promote()` race specifically has no direct test
+  (a genuine two-thread test was attempted and found to assert a false
+  invariant under low contention).
 
 ## M2-specific notes
 

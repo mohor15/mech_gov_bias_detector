@@ -101,6 +101,16 @@ jobs:
       - name: Enable the restricted app role (CI-only credential)
         run: python infra/ci/setup_test_role.py
 
+      # M3: routes are generated from whatever adapters this process's
+      # code has registered (see api/ingestion/routes.py), but each one
+      # rejects real traffic until its plugin_registrations row reaches
+      # PRODUCTION -- this smoke test's ingestion POST below needs that
+      # seeded first, the same way a real deployment would.
+      - name: Seed the plugin registry
+        run: |
+          python -m gov_platform.plugins.seed_registry \
+            --database-url "postgresql+psycopg://gov_platform_app:gov_platform_app_ci_only_password@localhost:5432/gov_platform"
+
       - name: Build image
         run: docker build -f infra/docker/Dockerfile -t gov-platform:ci .
 
@@ -118,6 +128,21 @@ jobs:
             sleep 1
           done
           echo "service did not become healthy" && docker logs gov-platform-ci && exit 1
+
+      - name: Ingest one real event through the registry-generated route
+        run: |
+          curl -sf -X POST http://localhost:8000/v1/ingestion/events/synthetic \
+            -H "Content-Type: application/json" \
+            -d '{
+                  "source_event_id": "ci-smoke-'"$GITHUB_RUN_ID"'",
+                  "source_system": "ci-smoke-system",
+                  "decision_type": "credit_decision",
+                  "subject_reference": "subject-001",
+                  "occurred_at": "2026-01-01T00:00:00Z",
+                  "features": {"annual_income": 65000.12},
+                  "protected_attributes": {},
+                  "decision": {"approved": true}
+                }' | grep -q '"status":"ALLOW"'
 
       - name: Stop container
         if: always()

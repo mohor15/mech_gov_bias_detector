@@ -33,6 +33,55 @@ requires_postgres = pytest.mark.skipif(
 _PLACEHOLDER_DATABASE_URL = "postgresql+psycopg://unreachable:5432/unreachable"
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _seed_plugin_registry() -> None:
+    """M3: every ingestion route now resolves its governing policy (and
+    checks its own adapter's lifecycle state) from `plugin_registrations`
+    on every request — see `api/ingestion/routes.py`. That means every
+    test exercising a real ingestion route now implicitly depends on the
+    four first-party plugins being registered and `PRODUCTION`, the same
+    idempotent seeding `plugins.seed_registry`'s CLI performs for a real
+    deployment. Folded into test session setup (rather than left as a
+    separate manual step, unlike migrations) because it's safe to run
+    every time and every ingestion test needs it. No-ops if POSTGRES_URL
+    isn't set — tests that don't need Postgres are unaffected, same as
+    every other DB-dependent fixture in this file.
+    """
+    if POSTGRES_URL is None:
+        return
+
+    from sqlalchemy.orm import Session
+
+    from gov_platform.db.repositories.plugin_registration import PluginRegistrationRepository
+    from gov_platform.plugins.bootstrap import bootstrap_plugins
+    from gov_platform.plugins.registry import known_adapter_keys, known_policy_keys
+    from gov_platform.plugins.seed_registry import seed_to_production
+    from gov_platform.schemas.plugin_registration import PluginType
+
+    bootstrap_plugins()
+    engine = create_db_engine(POSTGRES_URL)
+    repository = PluginRegistrationRepository()
+
+    with Session(engine) as session:
+        for plugin_id, version in known_adapter_keys():
+            seed_to_production(
+                session,
+                repository,
+                plugin_type=PluginType.ADAPTER,
+                plugin_id=plugin_id,
+                version=version,
+            )
+        for plugin_id, version in known_policy_keys():
+            seed_to_production(
+                session,
+                repository,
+                plugin_type=PluginType.POLICY,
+                plugin_id=plugin_id,
+                version=version,
+            )
+        session.commit()
+
+
 @pytest.fixture
 def postgres_url() -> str:
     """Skips the requesting test if POSTGRES_URL isn't set. Prefer the

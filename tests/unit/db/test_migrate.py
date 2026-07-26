@@ -103,9 +103,7 @@ def test_with_psycopg_driver_leaves_an_explicit_driver_untouched() -> None:
     assert _with_psycopg_driver(url) == url
 
 
-def test_main_applies_pending_migrations_and_reports_them(
-    tmp_path: Path, capsys: Any
-) -> None:
+def test_main_applies_pending_migrations_and_reports_them(tmp_path: Path, capsys: Any) -> None:
     _write_migration(tmp_path, "0001_create_foo.sql", "CREATE TABLE foo (id INTEGER PRIMARY KEY);")
     database_url = f"sqlite:///{tmp_path / 'test.db'}"
 
@@ -115,9 +113,7 @@ def test_main_applies_pending_migrations_and_reports_them(
     assert "Applied 1 migration(s): 0001_create_foo.sql" in capsys.readouterr().out
 
 
-def test_main_reports_no_pending_migrations_on_a_second_run(
-    tmp_path: Path, capsys: Any
-) -> None:
+def test_main_reports_no_pending_migrations_on_a_second_run(tmp_path: Path, capsys: Any) -> None:
     _write_migration(tmp_path, "0001_create_foo.sql", "CREATE TABLE foo (id INTEGER PRIMARY KEY);")
     database_url = f"sqlite:///{tmp_path / 'test.db'}"
     main(["--database-url", database_url, "--migrations-dir", str(tmp_path)])

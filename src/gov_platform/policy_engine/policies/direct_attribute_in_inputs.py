@@ -25,6 +25,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from gov_platform.plugins.registry import register_policy
 from gov_platform.policy_engine.base import Policy
 from gov_platform.protected_attributes.classification import FINANCE_DOMAIN
 from gov_platform.protected_attributes.resolver import ProtectedAttributeResolver
@@ -33,6 +34,7 @@ from gov_platform.schemas.finding import Finding, FindingOutcome
 from gov_platform.schemas.protected_attribute import ProtectedAttributeClassification
 
 
+@register_policy
 class DirectAttributeInInputsPolicy(Policy):
     """Fixed to the one domain `CreditScorecardAdapter` targets.
 

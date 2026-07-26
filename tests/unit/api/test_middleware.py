@@ -22,7 +22,7 @@ def test_oversized_body_is_rejected_with_413(
     app = create_app(settings=tiny_limit_settings)
     client = TestClient(app)
 
-    response = client.post("/v1/ingestion/events", json=synthetic_payload_json)
+    response = client.post("/v1/ingestion/events/synthetic", json=synthetic_payload_json)
 
     assert response.status_code == 413
     assert "byte limit" in response.json()["detail"]
@@ -45,7 +45,7 @@ def test_body_within_limit_is_not_rejected_by_the_middleware(
     payload = dict(synthetic_payload_json)
     payload["source_event_id"] = f"evt-{uuid4()}"
 
-    response = client.post("/v1/ingestion/events", json=payload)
+    response = client.post("/v1/ingestion/events/synthetic", json=payload)
 
     assert response.status_code != 413
     assert response.status_code == 201

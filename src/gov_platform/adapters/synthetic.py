@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pydantic import BaseModel, Field
 
 from gov_platform.adapters.base import Adapter
+from gov_platform.plugins.registry import register_adapter
 from gov_platform.schemas.decision_event import DecisionEvent
 
 
@@ -32,10 +33,20 @@ class SyntheticSourcePayload(BaseModel):
     decision: dict[str, object] = Field(default_factory=dict)
 
 
+@register_adapter
 class SyntheticAdapter(Adapter[SyntheticSourcePayload]):
     """Reference `Adapter` implementation — not a stand-in for a real
-    integration. A real classical-ML scorecard adapter arrives in M2.
+    integration. A real classical-ML scorecard adapter arrived in M2.
+
+    `governing_policy_id="always-allow"`: the synthetic path carries no
+    fairness-relevant protected attributes worth gating on (see
+    `AlwaysAllowPolicy`'s own docstring) — retrofitted into the M3
+    registry unchanged from its M0/M2 behavior.
     """
+
+    adapter_id = "synthetic"
+    version = "0.1.0"
+    governing_policy_id = "always-allow"
 
     def translate(self, raw_payload: SyntheticSourcePayload) -> DecisionEvent:
         return DecisionEvent(

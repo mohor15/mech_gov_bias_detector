@@ -5,6 +5,36 @@ grouped by milestone (`ARCH-GOV-002` / `IMPL-GOV-001`), not by release date,
 since this project ships as a sequence of frozen, incremental milestones
 rather than continuous releases.
 
+## [0.4.0-m3] — 2026-07-26 — M3: Plugin Registry, Lifecycle & Sandboxing
+
+Replaces M2's two hand-wired adapter/policy pairs with a real plugin
+registry: adapters and policies are registered with a draft/shadow/
+production lifecycle, ingestion routes are generated from whatever is
+registered, and every plugin call runs under a timeout + exception-
+isolating sandbox. Full design rationale, decisions, and the production-
+readiness review: [`docs/milestones/M3.md`](docs/milestones/M3.md).
+
+### Added
+- `plugins/registry.py` + `plugins/bootstrap.py` — an in-process catalog of first-party `Adapter`/`Policy` implementations, populated by `@register_adapter`/`@register_policy` decorators at import time. Not dynamic/external code loading.
+- `plugins/sandbox.py` — `run_sandboxed`, a timeout + exception-isolation wrapper around every plugin call. Deliberately not process/container isolation (no untrusted third-party plugin author exists yet).
+- `schemas/plugin_registration.py` + migration `0010` — `plugin_registrations` (draft/shadow/production lifecycle, a database constraint enforcing at most one `PRODUCTION` version per plugin) and `shadow_findings` (a shadow policy's output, structurally separate from `findings`).
+- `api/admin/plugins.py` — register/list/get/promote a plugin's lifecycle state, rejecting any `plugin_id`/`version` this process's code hasn't registered in-process.
+- `plugins/seed_registry.py` — a CLI that seeds the first-party plugins to `PRODUCTION`, kept separate from `create_app()` to preserve its DB-free-construction invariant.
+- `api/ingestion/routes.py` rewritten — one real, independently-typed FastAPI route generated per registered adapter, preserving Pydantic validation and OpenAPI generation, instead of one hand-written route per adapter.
+- `adapters/base.py` gains `adapter_id`/`version`/`governing_policy_id` identity, mirroring `Policy`'s existing `policy_id`/`version`.
+
+### Changed
+- `SyntheticAdapter`, `CreditScorecardAdapter`, `AlwaysAllowPolicy`, `DirectAttributeInInputsPolicy` are now registered plugins, retrofitted into the registry as its first four entries. `api/app.py`'s hand-wiring of them is gone entirely.
+- `Policy.evaluate(event) -> Finding` and `Adapter.translate` are unchanged — shadow execution is a side channel the ingestion route manages directly, not a widened port contract.
+
+### Fixed
+_(found during this milestone's own production-readiness review, before freeze)_
+- The most literal reading of "generate routes from PRODUCTION adapters" would have required a live database read at `create_app()` construction time, breaking the DB-free-construction invariant every milestone since M0 has relied on. Resolved by generating route *existence* from the in-process registry and resolving *which policy governs a request* from the database per-request instead.
+- `create`/`promote` on the plugin registry could surface a genuine database race (two concurrent callers registering/promoting the same identity) as a raw `500` instead of a clean client error — fixed by catching the constraint violation and re-raising a `ValueError`, the same client-error category already established in M2.
+
+### Deferred
+See `docs/milestones/M3.md` for the full account, including an accepted, documented inconsistency (the Admin API's own pre-check returns `409` for the common duplicate-registration case, while the rare race that slips past it returns `422`) and one production-readiness finding intentionally left untested (a two-thread test for `promote()`'s race branch was attempted and found to assert a false invariant under low contention). Policy plurality (M4), the full four-state verdict model (M5), DB-backed classification rules (M5), real OS-level plugin isolation (unscheduled), encryption at rest (M11).
+
 ## [0.3.0-m2] — 2026-07-26 — M2: Protected Attribute Resolution, First Real Adapter & Judgment-Bearing Policy
 
 Formalizes Protected Attribute Resolution (direct/proxied/withheld) and

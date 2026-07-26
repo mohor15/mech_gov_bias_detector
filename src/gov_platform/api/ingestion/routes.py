@@ -1,61 +1,79 @@
-"""The Ingestion API — the one endpoint this milestone exists to prove.
+"""The Ingestion API — architecture §15, M3.
 
-Hardwired to `SyntheticAdapter` for M0: there is exactly one adapter, so
-there is nothing to route between yet. Adapter registry/discovery so this
-endpoint can dispatch to whichever adapter a given `system_id` requires is
-M3 scope (architecture §6) — introducing it now, for one adapter, would be
-speculative generality with no second case to validate it against. (The
-handler below depends on the `Adapter` port, not `SyntheticAdapter`
-concretely, per the DIP fix in `api.dependencies` — but the request body's
-*schema* is still tied to one adapter's wire format, which is the part that
-is genuinely M3's job to generalize, not this one.)
+M0/M1/M2 hand-wrote one route per adapter, each hardcoded in this module
+and wired directly in `api/app.py`'s composition root. M3 replaces that
+with routes *generated* from the plugin registry (`plugins/registry.py`):
+one real, independently-typed FastAPI route per adapter this process
+knows about, built at app-construction time by inspecting
+`Adapter.translate`'s own type annotation for its payload type — not
+hand-written per adapter, and not requiring a database at construction
+time (see `api/app.py`'s module docstring on why `create_app()` must stay
+DB-free).
 
-Malformed request bodies never reach this handler: FastAPI validates
-`SyntheticSourcePayload` before the function body runs and returns a 422
-with the validation error, never a 500 — this is what M0's acceptance
-criterion "malformed input is rejected with a schema validation error, not
-a 500" actually depends on, and it is enforced by the type annotation below,
-not by a try/except this handler would otherwise need.
+Building a route with a *dynamic* payload type (it varies per adapter)
+while keeping FastAPI's real request validation and OpenAPI generation —
+the whole reason this approach was chosen over a single generic endpoint,
+see `docs/milestones/M3.md` §13.4 — needs one deliberate trick. Every
+module in this codebase uses `from __future__ import annotations`
+(PEP 563), which turns ordinary type annotations into strings resolved
+later against a function's *module* globals. A dynamically generated
+route's payload type is a local variable inside this factory, not a name
+in any module's global namespace, so a string annotation for it could
+never resolve. The fix: set the generated handler's `payload` entry in
+`__annotations__` directly to the already-resolved class object, *after*
+the function is defined, instead of writing a literal annotation in
+source. FastAPI resolves annotations via `typing.get_type_hints`, which
+leaves an already-non-string value alone — so this sidesteps string
+resolution entirely rather than fighting it.
 
-Defined as a plain `def`, not `async def`: every operation inside it
-(`Adapter.translate`, `NormalizationService.normalize`,
-`GovernanceEngine.govern`, `EvidenceStore.append`) is synchronous — none of
-it `await`s anything. An `async def` handler runs directly on the event
-loop, so blocking calls inside one block every other concurrent request on
-that worker; FastAPI runs a plain `def` handler in a threadpool instead,
-which is the correct, minimal fix for a fully-synchronous handler. Found
-during the M0 finalization review — see the production-readiness review.
+Per-request dispatch, not construction-time: route *existence* is a pure
+function of which adapters this process's code has registered in-process
+(`plugins/bootstrap.py`) — no database read. Which `Policy` actually
+governs a given request (`PRODUCTION` vs `SHADOW`) is resolved fresh on
+every request from `plugin_registrations`, so promoting/demoting a policy
+via the Admin API takes effect on the very next request, no app restart
+needed. An adapter with no `PRODUCTION`/`SHADOW` registration (still
+`DRAFT`, or never registered at all) rejects real traffic with a 503 —
+`SHADOW` and `PRODUCTION` currently behave identically for an *adapter*
+(both fully process and persist); M3 does not yet give adapter-level
+`SHADOW` a distinct meaning from `PRODUCTION` the way it does for
+policies (see `docs/milestones/M3.md`'s production-readiness review).
 
-M2 adds `ingest_credit_scorecard_event`, a second route for the second
-adapter, rather than generalizing this one to dispatch by payload shape —
-see `docs/milestones/M2.md` §11.1. Real adapter registry/discovery so a
-single endpoint can dispatch by `system_id` remains M3 scope; duplicating
-this thin handler per adapter is the correct amount of generality for
-exactly two cases, not a stopgap standing in for the real one.
+Handlers are plain `def`, not `async def` — same reasoning as M0's
+original ingestion route: every operation here is synchronous.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+import logging
+from collections.abc import Callable
+from functools import partial
+from typing import Any, cast, get_type_hints
+
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
 from gov_platform.adapters.base import Adapter
-from gov_platform.adapters.credit_scorecard import CreditScorecardPayload
-from gov_platform.adapters.synthetic import SyntheticSourcePayload
 from gov_platform.api.dependencies import (
-    get_adapter,
-    get_credit_scorecard_adapter,
-    get_credit_scorecard_governance_engine,
+    get_db_engine,
     get_evidence_store,
-    get_governance_engine,
     get_normalization_service,
+    get_plugin_registration_repository,
+    get_shadow_finding_repository,
 )
 from gov_platform.audit.evidence_store import EvidenceStore
+from gov_platform.db.repositories.plugin_registration import PluginRegistrationRepository
+from gov_platform.db.repositories.shadow_finding import ShadowFindingRepository
 from gov_platform.governance_engine.engine import GovernanceEngine
 from gov_platform.normalization.service import NormalizationService
+from gov_platform.plugins import registry
+from gov_platform.plugins.sandbox import run_sandboxed
+from gov_platform.schemas.plugin_registration import PluginLifecycleState, PluginType
 from gov_platform.schemas.verdict import VerdictStatus
 
-router = APIRouter(tags=["ingestion"])
+logger = logging.getLogger(__name__)
 
 
 class IngestionResponse(BaseModel):
@@ -66,56 +84,152 @@ class IngestionResponse(BaseModel):
     evidence_record_hash: str
 
 
-@router.post("/events", response_model=IngestionResponse, status_code=status.HTTP_201_CREATED)
-def ingest_event(
-    payload: SyntheticSourcePayload,
-    adapter: Adapter[SyntheticSourcePayload] = Depends(get_adapter),
-    normalization_service: NormalizationService = Depends(get_normalization_service),
-    governance_engine: GovernanceEngine = Depends(get_governance_engine),
-    evidence_store: EvidenceStore = Depends(get_evidence_store),
-) -> IngestionResponse:
-    """The full M0 vertical slice: adapter -> normalize -> governance -> evidence."""
-    decision_event = adapter.translate(payload)
-    normalized_event = normalization_service.normalize(decision_event)
-    verdict = governance_engine.govern(normalized_event)
-    evidence_record = evidence_store.append(normalized_event, verdict)
-
-    return IngestionResponse(
-        decision_event_id=normalized_event.event_id,
-        verdict_id=verdict.verdict_id,
-        status=verdict.status,
-        evidence_sequence_number=evidence_record.sequence_number,
-        evidence_record_hash=evidence_record.record_hash,
-    )
+def _payload_type_for(adapter_cls: type[Adapter[Any]]) -> type[BaseModel]:
+    """The concrete Pydantic type `adapter_cls.translate` accepts,
+    resolved from its own (PEP 563, postponed) type annotation against
+    its defining module's globals — not guessed from the generic
+    `Adapter[TPayload]` parameterization, which isn't reliably
+    introspectable at runtime without extra bookkeeping this avoids."""
+    hints = get_type_hints(adapter_cls.translate)
+    return cast(type[BaseModel], hints["raw_payload"])
 
 
-@router.post(
-    "/events/credit-scorecard",
-    response_model=IngestionResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def ingest_credit_scorecard_event(
-    payload: CreditScorecardPayload,
-    adapter: Adapter[CreditScorecardPayload] = Depends(get_credit_scorecard_adapter),
-    normalization_service: NormalizationService = Depends(get_normalization_service),
-    governance_engine: GovernanceEngine = Depends(get_credit_scorecard_governance_engine),
-    evidence_store: EvidenceStore = Depends(get_evidence_store),
-) -> IngestionResponse:
-    """The M2 vertical slice for the credit-scorecard adapter: adapter ->
-    normalize -> governance (the direct-attribute-in-inputs policy) ->
-    evidence. Shares `NormalizationService` and `EvidenceStore` with
-    `ingest_event` above — both routes write into the same append-only
-    ledger — but uses its own adapter and its own, independently-policied
-    `GovernanceEngine`."""
-    decision_event = adapter.translate(payload)
-    normalized_event = normalization_service.normalize(decision_event)
-    verdict = governance_engine.govern(normalized_event)
-    evidence_record = evidence_store.append(normalized_event, verdict)
+def _build_handler(
+    adapter: Adapter[Any], payload_type: type[BaseModel]
+) -> Callable[..., IngestionResponse]:
+    def handler(
+        payload: Any,
+        normalization_service: NormalizationService = Depends(get_normalization_service),
+        evidence_store: EvidenceStore = Depends(get_evidence_store),
+        db_engine: Engine = Depends(get_db_engine),
+        plugin_registration_repository: PluginRegistrationRepository = Depends(
+            get_plugin_registration_repository
+        ),
+        shadow_finding_repository: ShadowFindingRepository = Depends(get_shadow_finding_repository),
+    ) -> IngestionResponse:
+        with Session(db_engine) as session:
+            adapter_registration = plugin_registration_repository.get_by_identity(
+                session,
+                plugin_type=PluginType.ADAPTER,
+                plugin_id=adapter.adapter_id,
+                version=adapter.version,
+            )
+        if adapter_registration is None or adapter_registration.lifecycle_state is (
+            PluginLifecycleState.DRAFT
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"adapter '{adapter.adapter_id}' is not yet accepting production traffic",
+            )
 
-    return IngestionResponse(
-        decision_event_id=normalized_event.event_id,
-        verdict_id=verdict.verdict_id,
-        status=verdict.status,
-        evidence_sequence_number=evidence_record.sequence_number,
-        evidence_record_hash=evidence_record.record_hash,
-    )
+        decision_event = run_sandboxed(lambda: adapter.translate(payload))
+        normalized_event = normalization_service.normalize(decision_event)
+
+        with Session(db_engine) as session:
+            policy_registrations = plugin_registration_repository.list_by_type_and_plugin_id(
+                session, plugin_type=PluginType.POLICY, plugin_id=adapter.governing_policy_id
+            )
+        production_registration = next(
+            (
+                r
+                for r in policy_registrations
+                if r.lifecycle_state is PluginLifecycleState.PRODUCTION
+            ),
+            None,
+        )
+        if production_registration is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(f"no PRODUCTION policy registered for '{adapter.governing_policy_id}'"),
+            )
+        shadow_registrations = [
+            r for r in policy_registrations if r.lifecycle_state is PluginLifecycleState.SHADOW
+        ]
+
+        production_policy_cls = registry.get_policy_class(
+            production_registration.plugin_id, production_registration.version
+        )
+        if production_policy_cls is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    f"PRODUCTION policy '{production_registration.plugin_id}' "
+                    f"version {production_registration.version} is registered but no longer "
+                    "deployed in this process"
+                ),
+            )
+        production_policy = production_policy_cls()
+        engine = GovernanceEngine(policy=production_policy)
+        verdict = run_sandboxed(lambda: engine.govern(normalized_event))
+        evidence_record = evidence_store.append(normalized_event, verdict)
+
+        for shadow_registration in shadow_registrations:
+            shadow_policy_cls = registry.get_policy_class(
+                shadow_registration.plugin_id, shadow_registration.version
+            )
+            if shadow_policy_cls is None:
+                continue  # registered in the DB but no longer deployed here -- skip it
+            shadow_policy = shadow_policy_cls()
+            try:
+                # functools.partial binds shadow_policy.evaluate and
+                # normalized_event immediately, not a closure over the
+                # loop variable `shadow_policy` -- a lambda here would
+                # resolve `shadow_policy` at call time, by which point the
+                # loop may have already reassigned it to the next iteration's
+                # policy (B023).
+                shadow_finding = run_sandboxed(partial(shadow_policy.evaluate, normalized_event))
+            except Exception:
+                # A shadow policy exists to be evaluated safely, without
+                # risk to real ingestion -- see docs/milestones/M3.md
+                # §13.3. Its own failure must never surface to the caller.
+                logger.exception(
+                    "shadow_policy_evaluation_failed",
+                    extra={"extra_fields": {"plugin_registration_id": shadow_registration.id}},
+                )
+                continue
+            with Session(db_engine) as session:
+                shadow_finding_repository.create(
+                    session, shadow_finding, plugin_registration_id=shadow_registration.id
+                )
+                session.commit()
+
+        return IngestionResponse(
+            decision_event_id=normalized_event.event_id,
+            verdict_id=verdict.verdict_id,
+            status=verdict.status,
+            evidence_sequence_number=evidence_record.sequence_number,
+            evidence_record_hash=evidence_record.record_hash,
+        )
+
+    # See this module's docstring: sidesteps PEP 563 string-annotation
+    # resolution for the one parameter whose type genuinely varies per
+    # generated route.
+    handler.__annotations__["payload"] = payload_type
+    handler.__annotations__["return"] = IngestionResponse
+    handler.__name__ = f"ingest_{adapter.adapter_id.replace('-', '_')}_event"
+    return handler
+
+
+def build_ingestion_router() -> APIRouter:
+    """One real route per adapter registered in-process (see
+    `plugins.bootstrap`). Called once at app-construction time; reads no
+    database — see this module's docstring."""
+    router = APIRouter(tags=["ingestion"])
+
+    for adapter_id, version in sorted(registry.known_adapter_keys()):
+        adapter_cls = registry.get_adapter_class(adapter_id, version)
+        assert adapter_cls is not None  # just came from known_adapter_keys()
+        adapter = adapter_cls()
+        payload_type = _payload_type_for(adapter_cls)
+        handler = _build_handler(adapter, payload_type)
+
+        router.add_api_route(
+            f"/events/{adapter.adapter_id}",
+            handler,
+            methods=["POST"],
+            response_model=IngestionResponse,
+            status_code=status.HTTP_201_CREATED,
+            name=handler.__name__,
+        )
+
+    return router
