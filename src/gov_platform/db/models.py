@@ -1,0 +1,99 @@
+"""SQLAlchemy declarative models — a query-time mapping onto the schema
+`infra/migrations/*.sql` owns. These models are never used to generate DDL
+(no `Base.metadata.create_all()` anywhere in this codebase as of M1) — that
+would make two sources of schema truth. If a model and a migration ever
+disagree, the migration is correct and the model is the bug.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class SystemRow(Base):
+    __tablename__ = "systems"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    domain: Mapped[str | None] = mapped_column(String, nullable=True)
+    risk_tier: Mapped[str | None] = mapped_column(String, nullable=True)
+    owner: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ModelVersionRow(Base):
+    __tablename__ = "model_versions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    system_id: Mapped[str] = mapped_column(String, ForeignKey("systems.id"), nullable=False)
+    version: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DecisionEventRow(Base):
+    __tablename__ = "decision_events"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    model_version_id: Mapped[str] = mapped_column(
+        String, ForeignKey("model_versions.id"), nullable=False
+    )
+    decision_type: Mapped[str] = mapped_column(String, nullable=False)
+    subject_ref: Mapped[str] = mapped_column(String, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    input_features: Mapped[str] = mapped_column(Text, nullable=False)
+    protected_attribute_refs: Mapped[str] = mapped_column(Text, nullable=False)
+    decision_output: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class FindingRow(Base):
+    __tablename__ = "findings"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    decision_event_id: Mapped[str] = mapped_column(
+        String, ForeignKey("decision_events.id"), nullable=False
+    )
+    policy_id: Mapped[str] = mapped_column(String, nullable=False)
+    policy_version: Mapped[str] = mapped_column(String, nullable=False)
+    outcome: Mapped[str] = mapped_column(String, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    metric_values: Mapped[str] = mapped_column(Text, nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class VerdictRow(Base):
+    __tablename__ = "verdicts"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    decision_event_id: Mapped[str] = mapped_column(
+        String, ForeignKey("decision_events.id"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class VerdictFindingRow(Base):
+    __tablename__ = "verdict_findings"
+
+    verdict_id: Mapped[str] = mapped_column(String, ForeignKey("verdicts.id"), primary_key=True)
+    finding_id: Mapped[str] = mapped_column(String, ForeignKey("findings.id"), primary_key=True)
+
+
+class EvidenceChainRow(Base):
+    __tablename__ = "evidence_chain"
+
+    sequence_number: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    decision_event_id: Mapped[str] = mapped_column(String, nullable=False)
+    verdict_id: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    previous_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    record_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

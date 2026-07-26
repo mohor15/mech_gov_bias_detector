@@ -8,7 +8,6 @@ them now would be speculative, not foundational.
 """
 
 from functools import lru_cache
-from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -24,11 +23,17 @@ class Settings(BaseSettings):
     VERSION: str = "0.1.0"
     LOG_LEVEL: str = "INFO"
 
-    # SQLite file backing the M0 Evidence Store. Replaced by a Postgres
-    # connection string in M1 (architecture §16) — kept as a simple path here
-    # deliberately, so the M1 migration is a visible, reviewable change rather
-    # than something hidden behind a premature abstraction today.
-    EVIDENCE_DB_PATH: Path = Path("data/evidence.db")
+    # M1: replaces M0's EVIDENCE_DB_PATH (a SQLite file path), removed —
+    # dead config once nothing points at a SQLite file anymore. This is the
+    # app's own runtime connection string, expected to authenticate as the
+    # restricted `gov_platform_app` role (see
+    # infra/migrations/0008_grant_evidence_chain_privileges.sql), not as a
+    # migration-privileged superuser/owner. Migrations use a separate,
+    # more-privileged connection string passed directly to `db.migrate`'s
+    # CLI — deliberately kept out of this settings model, since migration
+    # credentials are an ops-time concern with different privileges than
+    # the running app, not a runtime app dependency.
+    DATABASE_URL: str = "postgresql+psycopg://gov_platform_app@localhost:5432/gov_platform"
 
     # Added during the M0 finalization review: the Ingestion API had no cap
     # on request body size, a real (if naive-client-only) DoS vector. 1MB is

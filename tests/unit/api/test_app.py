@@ -39,12 +39,14 @@ def test_unhandled_exception_returns_generic_500_not_a_traceback(
     assert "Traceback" not in response.text
 
 
-def test_create_app_wires_independent_instances(tmp_path: Any) -> None:
+def test_create_app_wires_independent_instances() -> None:
     # Two app instances must not share an Evidence Store — this is what
     # makes create_app a real composition root rather than V1's shared
-    # module-level globals.
-    settings_a = Settings(EVIDENCE_DB_PATH=tmp_path / "a.db")
-    settings_b = Settings(EVIDENCE_DB_PATH=tmp_path / "b.db")
+    # module-level globals. Doesn't need a real database: construction is
+    # lazy (see EvidenceStore's module docstring), so distinct placeholder
+    # URLs are enough to prove non-identity without touching Postgres.
+    settings_a = Settings(DATABASE_URL="postgresql+psycopg://unreachable-a:5432/a")
+    settings_b = Settings(DATABASE_URL="postgresql+psycopg://unreachable-b:5432/b")
 
     app_a = create_app(settings=settings_a)
     app_b = create_app(settings=settings_b)

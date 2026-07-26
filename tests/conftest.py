@@ -1,31 +1,66 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.engine import Engine
 
 from gov_platform.api.app import create_app
 from gov_platform.audit.evidence_store import EvidenceStore
 from gov_platform.config.settings import Settings
+from gov_platform.db.session import create_db_engine
 from gov_platform.schemas.decision_event import DecisionEvent
 
+# M1: a real Postgres instance is required for anything that actually
+# persists data. This sandbox has none (see docs/milestones/M1.md) — set
+# POSTGRES_URL to run these tests locally; CI always sets it. Tests that
+# never need a successful write (most of M0's suite: schemas, adapters,
+# normalization, policy/governance engines, most of the API composition-root
+# and middleware tests) need none of this and are unaffected.
+POSTGRES_URL = os.environ.get("POSTGRES_URL")
+
+requires_postgres = pytest.mark.skipif(
+    POSTGRES_URL is None,
+    reason="POSTGRES_URL not set — needs a real Postgres instance; see docs/milestones/M1.md",
+)
+
+# A syntactically valid but unreachable placeholder, used only by tests that
+# construct a Settings/app instance without ever needing a successful DB
+# round trip (SQLAlchemy engines are lazy — see EvidenceStore's docstring).
+_PLACEHOLDER_DATABASE_URL = "postgresql+psycopg://unreachable:5432/unreachable"
+
 
 @pytest.fixture
-def evidence_db_path(tmp_path: Path) -> Path:
-    return tmp_path / "evidence.db"
+def postgres_url() -> str:
+    """Skips the requesting test if POSTGRES_URL isn't set. Prefer the
+    `requires_postgres` marker on integration tests; use this fixture when a
+    test needs the URL value itself (e.g. to build an engine)."""
+    if POSTGRES_URL is None:
+        pytest.skip("POSTGRES_URL not set")
+    return POSTGRES_URL
 
 
 @pytest.fixture
-def evidence_store(evidence_db_path: Path) -> EvidenceStore:
-    return EvidenceStore(evidence_db_path)
+def db_engine(postgres_url: str) -> Engine:
+    return create_db_engine(postgres_url)
 
 
 @pytest.fixture
-def test_settings(evidence_db_path: Path) -> Settings:
-    return Settings(EVIDENCE_DB_PATH=evidence_db_path)
+def evidence_store(db_engine: Engine) -> EvidenceStore:
+    return EvidenceStore(db_engine)
+
+
+@pytest.fixture
+def test_settings() -> Settings:
+    """Real POSTGRES_URL when available (CI), else an unreachable
+    placeholder — safe because Settings/create_app construction never
+    connects eagerly. Tests that need a successful persistence round trip
+    must also carry `requires_postgres` (or depend on `postgres_url`/
+    `db_engine`/`evidence_store`, which skip on their own)."""
+    return Settings(DATABASE_URL=POSTGRES_URL or _PLACEHOLDER_DATABASE_URL)
 
 
 @pytest.fixture

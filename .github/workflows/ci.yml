@@ -7,6 +7,39 @@ on:
 jobs:
   lint-type-test:
     runs-on: ubuntu-latest
+
+    # M1: a real Postgres is required for migrations, the repository layer,
+    # and the DB-privilege-enforcement test — none of which can run in this
+    # sandbox's dev environment (see docs/milestones/M1.md). This service
+    # container is where those tests actually execute; locally they're
+    # skipped via pytest.mark.skipif when POSTGRES_URL isn't set.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gov_platform
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Admin/owner connection — used only for applying migrations and the
+      # one-time CI role setup step, never by the application or its tests.
+      ADMIN_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gov_platform
+      GOV_PLATFORM_APP_PASSWORD: gov_platform_app_ci_only_password
+      # The app's own connection, authenticating as the DB-privilege-
+      # restricted role migration 0008 creates. Read by both the app
+      # (GOV_PLATFORM_DATABASE_URL, via Settings' env prefix) and the test
+      # suite's skip-if-absent fixtures (POSTGRES_URL).
+      GOV_PLATFORM_DATABASE_URL: postgresql+psycopg://gov_platform_app:gov_platform_app_ci_only_password@localhost:5432/gov_platform
+      POSTGRES_URL: postgresql+psycopg://gov_platform_app:gov_platform_app_ci_only_password@localhost:5432/gov_platform
+
     steps:
       - uses: actions/checkout@v4
 
@@ -23,20 +56,60 @@ jobs:
       - name: Type-check (mypy)
         run: mypy src
 
-      - name: Test (pytest, with coverage)
-        run: pytest
+      - name: Apply migrations
+        run: python -m gov_platform.db.migrate --database-url "$ADMIN_DATABASE_URL"
+
+      - name: Enable the restricted app role (CI-only credential)
+        run: python infra/ci/setup_test_role.py
+
+      - name: Test (pytest, with enforced coverage floor)
+        run: pytest --cov-fail-under=98
 
   docker-smoke:
     runs-on: ubuntu-latest
     needs: lint-type-test
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gov_platform
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ADMIN_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gov_platform
+      GOV_PLATFORM_APP_PASSWORD: gov_platform_app_ci_only_password
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package (sqlalchemy + psycopg are base dependencies)
+        run: pip install -e .
+
+      - name: Apply migrations
+        run: python -m gov_platform.db.migrate --database-url "$ADMIN_DATABASE_URL"
+
+      - name: Enable the restricted app role (CI-only credential)
+        run: python infra/ci/setup_test_role.py
 
       - name: Build image
         run: docker build -f infra/docker/Dockerfile -t gov-platform:ci .
 
       - name: Run container
-        run: docker run -d -p 8000:8000 --name gov-platform-ci gov-platform:ci
+        run: |
+          docker run -d -p 8000:8000 --name gov-platform-ci \
+            --add-host=host.docker.internal:host-gateway \
+            -e GOV_PLATFORM_DATABASE_URL="postgresql+psycopg://gov_platform_app:gov_platform_app_ci_only_password@host.docker.internal:5432/gov_platform" \
+            gov-platform:ci
 
       - name: Wait for health check
         run: |

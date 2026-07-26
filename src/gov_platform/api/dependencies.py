@@ -18,10 +18,12 @@ abstraction for them here would be speculative, not a fix.
 from __future__ import annotations
 
 from fastapi import Request
+from sqlalchemy.engine import Engine
 
 from gov_platform.adapters.base import Adapter
 from gov_platform.adapters.synthetic import SyntheticSourcePayload
 from gov_platform.audit.evidence_store import EvidenceStore
+from gov_platform.db.repositories.system import SystemRepository
 from gov_platform.governance_engine.engine import GovernanceEngine
 from gov_platform.normalization.service import NormalizationService
 
@@ -44,3 +46,16 @@ def get_governance_engine(request: Request) -> GovernanceEngine:
 def get_evidence_store(request: Request) -> EvidenceStore:
     store: EvidenceStore = request.app.state.evidence_store
     return store
+
+
+def get_db_engine(request: Request) -> Engine:
+    """M1: the one shared Engine, used directly by the Admin API's routes
+    (which need their own short-lived Session, distinct from EvidenceStore's
+    internal one) — see api.app for why this is a single shared engine."""
+    engine: Engine = request.app.state.db_engine
+    return engine
+
+
+def get_system_repository(request: Request) -> SystemRepository:
+    repository: SystemRepository = request.app.state.system_repository
+    return repository

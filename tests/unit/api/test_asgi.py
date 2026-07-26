@@ -1,9 +1,13 @@
 """Confirms the uvicorn entrypoint actually builds a working app.
 
-Runs in a temp working directory so this test — the one place `create_app()`
-runs with zero overrides — cannot write a stray `data/evidence.db` into the
-repository itself, which is exactly the failure mode this file exists to
-prevent module (see `api.asgi` docstring).
+M1 update: M0's version of this test asserted that importing `api.asgi`
+created a stray `data/evidence.db` SQLite file and ran in an isolated CWD to
+contain that side effect. Neither applies anymore — `EvidenceStore` is
+Postgres-only now and its construction is lazy (see its module docstring),
+so importing `api.asgi` with zero overrides touches neither the filesystem
+nor the network. This test now asserts the *absence* of any stray file as
+the direct, positive confirmation of that laziness, alongside the original
+liveness check.
 """
 
 from __future__ import annotations
@@ -20,11 +24,13 @@ def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def test_asgi_app_is_healthy(isolated_cwd: Path) -> None:
+def test_asgi_app_is_healthy_and_touches_no_local_state(isolated_cwd: Path) -> None:
     from gov_platform.api.asgi import app  # imported here: construction happens on import
 
     client = TestClient(app)
     response = client.get("/healthz")
 
     assert response.status_code == 200
-    assert (isolated_cwd / "data" / "evidence.db").exists()
+    # Confirms EvidenceStore's construction stayed lazy: no local file of
+    # any kind should exist just from building and health-checking the app.
+    assert list(isolated_cwd.iterdir()) == []

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gov-platform"
-version = "0.1.0"
-description = "Domain-agnostic AI Governance Platform (V2) — M0: repository foundation & walking skeleton."
+version = "0.2.0"
+description = "Domain-agnostic AI Governance Platform (V2) — M1: Postgres persistence & System registry."
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [
@@ -14,6 +14,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -39,7 +40,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "N"]
 ignore = []
 
 [tool.ruff.lint.isort]
-known-first-party = ["gov_platform"]
+known-first-party = ["gov_platform", "tests"]
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI's dependency-injection pattern is `param: T = Depends(provider)` —
@@ -63,11 +64,16 @@ disallow_untyped_defs = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-# --cov-fail-under added during the M0 finalization review: coverage was
-# reported but nothing failed the build if it regressed. 98 gives a small
-# margin below M0's actual ~99% rather than a hair-trigger threshold, while
-# still catching a real drop.
-addopts = "-ra --strict-markers --cov=gov_platform --cov-report=term-missing --cov-fail-under=98"
+# No --cov-fail-under here as of M1 (moved out during the M1 environment
+# constraint — see docs/milestones/M1.md). M0's blanket local floor assumed
+# everything was locally runnable; a meaningful chunk of M1's code is
+# genuinely Postgres-only and cannot execute without a live database this
+# sandbox doesn't have. A floor enforced where that code can't run would
+# either fail dishonestly or have to be weakened enough to stop meaning
+# anything in CI too. The floor now lives in .github/workflows/ci.yml's
+# Postgres-enabled job, where the number is actually meaningful; local runs
+# still report coverage, just without an enforced gate.
+addopts = "-ra --strict-markers --cov=gov_platform --cov-report=term-missing"
 testpaths = ["tests"]
 pythonpath = ["src"]
 

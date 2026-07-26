@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from gov_platform.api.app import create_app
 from gov_platform.config.settings import Settings
+from tests.conftest import requires_postgres
 
 
 def test_oversized_body_is_rejected_with_413(
@@ -26,11 +27,14 @@ def test_oversized_body_is_rejected_with_413(
     assert "byte limit" in response.json()["detail"]
 
 
+@requires_postgres
 def test_body_within_limit_is_not_rejected_by_the_middleware(
     test_settings: Settings, synthetic_payload_json: dict[str, Any]
 ) -> None:
     # Default limit (1MB) is generous for this payload — the middleware must
-    # not interfere with the normal, in-scope request path.
+    # not interfere with the normal, in-scope request path. Needs Postgres:
+    # unlike the 413 case (rejected before the route runs at all), proving
+    # a request is genuinely *let through* means it must succeed end to end.
     app = create_app(settings=test_settings)
     client = TestClient(app)
 

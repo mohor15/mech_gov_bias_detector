@@ -1,0 +1,38 @@
+"""CI-only helper: enables login for the `gov_platform_app` role migration
+0008 creates (without LOGIN/PASSWORD, deliberately — see that migration's
+comments on keeping credentials out of version control) and sets its
+password from an environment variable.
+
+Not part of the application or its test suite — invoked as one CI step
+between "apply migrations" and "run tests", using the admin connection to
+grant the restricted role a real, connectable password for this ephemeral
+CI database only. A real deployment's DBA runs the equivalent as an ops
+step against a durable database, with a secret-managed password — this
+script exists because CI's Postgres service container has neither.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+import psycopg
+
+
+def main() -> int:
+    admin_url = os.environ["ADMIN_DATABASE_URL"]
+    app_password = os.environ["GOV_PLATFORM_APP_PASSWORD"]
+
+    with psycopg.connect(admin_url) as connection:
+        connection.execute(
+            "ALTER ROLE gov_platform_app WITH LOGIN PASSWORD %s",
+            (app_password,),
+        )
+        connection.commit()
+
+    print("gov_platform_app role is now enabled for login.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
