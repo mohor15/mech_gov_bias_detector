@@ -21,23 +21,32 @@ rationale — and costs nothing extra for M3's future adapters, each of which
 will parameterize `Adapter` with its own payload type the same way.
 
 M3 adds three identity class attributes — `adapter_id`, `version`,
-`governing_policy_id` — mirroring `Policy`'s existing `policy_id`/`version`.
+`governing_policy_ids` — mirroring `Policy`'s existing `policy_id`/`version`.
 `translate`'s signature is completely unchanged; this is metadata *about*
 an adapter, not a new capability *of* one:
 
 * `adapter_id`/`version` let `plugins.registry` catalog this
   implementation and let the M3 registry track its lifecycle state
   (draft/shadow/production) without any code change to this class.
-* `governing_policy_id` names which `Policy.policy_id` family decides
+* `governing_policy_ids` names which `Policy.policy_id` families decide
   `FLAGGED`/`CLEAR` for events this adapter produces. This exists because
   `Policy.evaluate(event) -> Finding` deliberately has no database access
-  (see `docs/milestones/M3.md` §9) and so cannot look up which policy
+  (see `docs/milestones/M3.md` §9) and so cannot look up which policies
   should govern a given event dynamically — the association has to live
   somewhere static, and the adapter (which already encodes "this is a
   FINANCE-domain credit scorecard," for example) is the natural place for
   it, not a new binding table (that richer "which policy for which
   domain/jurisdiction" concept is explicitly M5's Policy Bindings, not
   this).
+
+  M4 widens this from a single id (M3) to a tuple: `GovernanceEngine`
+  now runs every policy family an adapter declares and aggregates their
+  Findings (architecture §8, "policy plurality" — see
+  `docs/milestones/M4.md`). Still a fixed, code-defined tuple, not
+  admin-configurable — *dynamically* binding policies to domains/
+  jurisdictions remains M5's Policy Bindings, not this (see
+  `docs/milestones/M4.md` §13.1 for why conflating the two would be a
+  real scope-creep mistake, not a simplification).
 """
 
 from __future__ import annotations
@@ -55,7 +64,7 @@ class Adapter(ABC, Generic[TPayload]):
 
     adapter_id: str
     version: str
-    governing_policy_id: str
+    governing_policy_ids: tuple[str, ...]
 
     @abstractmethod
     def translate(self, raw_payload: TPayload) -> DecisionEvent:

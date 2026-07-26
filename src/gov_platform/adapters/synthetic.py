@@ -38,15 +38,17 @@ class SyntheticAdapter(Adapter[SyntheticSourcePayload]):
     """Reference `Adapter` implementation — not a stand-in for a real
     integration. A real classical-ML scorecard adapter arrived in M2.
 
-    `governing_policy_id="always-allow"`: the synthetic path carries no
-    fairness-relevant protected attributes worth gating on (see
-    `AlwaysAllowPolicy`'s own docstring) — retrofitted into the M3
-    registry unchanged from its M0/M2 behavior.
+    `governing_policy_ids=("always-allow",)`: the synthetic path carries
+    no fairness-relevant protected attributes worth gating on (see
+    `AlwaysAllowPolicy`'s own docstring) — a single-element tuple, since
+    only one policy family has ever governed this path. Mechanical M4
+    update (`str` -> `tuple[str, ...]`), no behavior change and no
+    version bump: the actual governing policy set is identical.
     """
 
     adapter_id = "synthetic"
     version = "0.1.0"
-    governing_policy_id = "always-allow"
+    governing_policy_ids = ("always-allow",)
 
     def translate(self, raw_payload: SyntheticSourcePayload) -> DecisionEvent:
         return DecisionEvent(

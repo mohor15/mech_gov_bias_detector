@@ -41,6 +41,15 @@ policies (see `docs/milestones/M3.md`'s production-readiness review).
 
 Handlers are plain `def`, not `async def` — same reasoning as M0's
 original ingestion route: every operation here is synchronous.
+
+M4: an adapter can declare more than one `governing_policy_ids` family
+(architecture §8, policy plurality — see `docs/milestones/M4.md`). The
+per-request resolution loop below now runs once per declared family,
+collecting one `PRODUCTION` policy from each into a single
+`GovernanceEngine`, which aggregates their Findings into one Verdict.
+Any family missing a live `PRODUCTION` policy fails the whole request —
+no verdict is ever built from a partial policy set. `SHADOW` execution
+is unaffected: it was already scoped per policy family, not per adapter.
 """
 
 from __future__ import annotations
@@ -70,7 +79,12 @@ from gov_platform.governance_engine.engine import GovernanceEngine
 from gov_platform.normalization.service import NormalizationService
 from gov_platform.plugins import registry
 from gov_platform.plugins.sandbox import run_sandboxed
-from gov_platform.schemas.plugin_registration import PluginLifecycleState, PluginType
+from gov_platform.policy_engine.base import Policy
+from gov_platform.schemas.plugin_registration import (
+    PluginLifecycleState,
+    PluginRegistration,
+    PluginType,
+)
 from gov_platform.schemas.verdict import VerdictStatus
 
 logger = logging.getLogger(__name__)
@@ -125,41 +139,52 @@ def _build_handler(
         decision_event = run_sandboxed(lambda: adapter.translate(payload))
         normalized_event = normalization_service.normalize(decision_event)
 
+        # M4: one production policy per declared governing_policy_id,
+        # collected in declaration order so GovernanceEngine's findings
+        # come out deterministic (see docs/milestones/M4.md §4/§13.7) --
+        # and any family missing a PRODUCTION policy fails the whole
+        # request immediately, the same "no partial verdicts" discipline
+        # M3 already applied to a single family.
+        production_policies: list[Policy] = []
+        shadow_registrations: list[PluginRegistration] = []
         with Session(db_engine) as session:
-            policy_registrations = plugin_registration_repository.list_by_type_and_plugin_id(
-                session, plugin_type=PluginType.POLICY, plugin_id=adapter.governing_policy_id
-            )
-        production_registration = next(
-            (
-                r
-                for r in policy_registrations
-                if r.lifecycle_state is PluginLifecycleState.PRODUCTION
-            ),
-            None,
-        )
-        if production_registration is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(f"no PRODUCTION policy registered for '{adapter.governing_policy_id}'"),
-            )
-        shadow_registrations = [
-            r for r in policy_registrations if r.lifecycle_state is PluginLifecycleState.SHADOW
-        ]
+            for governing_policy_id in adapter.governing_policy_ids:
+                policy_registrations = plugin_registration_repository.list_by_type_and_plugin_id(
+                    session, plugin_type=PluginType.POLICY, plugin_id=governing_policy_id
+                )
+                production_registration = next(
+                    (
+                        r
+                        for r in policy_registrations
+                        if r.lifecycle_state is PluginLifecycleState.PRODUCTION
+                    ),
+                    None,
+                )
+                if production_registration is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=f"no PRODUCTION policy registered for '{governing_policy_id}'",
+                    )
+                production_policy_cls = registry.get_policy_class(
+                    production_registration.plugin_id, production_registration.version
+                )
+                if production_policy_cls is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=(
+                            f"PRODUCTION policy '{production_registration.plugin_id}' "
+                            f"version {production_registration.version} is registered but no "
+                            "longer deployed in this process"
+                        ),
+                    )
+                production_policies.append(production_policy_cls())
+                shadow_registrations.extend(
+                    r
+                    for r in policy_registrations
+                    if r.lifecycle_state is PluginLifecycleState.SHADOW
+                )
 
-        production_policy_cls = registry.get_policy_class(
-            production_registration.plugin_id, production_registration.version
-        )
-        if production_policy_cls is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    f"PRODUCTION policy '{production_registration.plugin_id}' "
-                    f"version {production_registration.version} is registered but no longer "
-                    "deployed in this process"
-                ),
-            )
-        production_policy = production_policy_cls()
-        engine = GovernanceEngine(policy=production_policy)
+        engine = GovernanceEngine(policies=production_policies)
         verdict = run_sandboxed(lambda: engine.govern(normalized_event))
         evidence_record = evidence_store.append(normalized_event, verdict)
 

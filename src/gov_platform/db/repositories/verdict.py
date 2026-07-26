@@ -38,7 +38,12 @@ class VerdictRepository:
             select(FindingRow)
             .join(VerdictFindingRow, VerdictFindingRow.finding_id == FindingRow.id)
             .where(VerdictFindingRow.verdict_id == verdict_id)
-            .order_by(FindingRow.evaluated_at)
+            # M4: policy_id is a secondary sort key so read order is
+            # guaranteed to reproduce write order even if two policies in
+            # the same GovernanceEngine.govern() call land on the same
+            # evaluated_at timestamp (low clock resolution) -- see
+            # docs/milestones/M4.md §13.7.
+            .order_by(FindingRow.evaluated_at, FindingRow.policy_id)
         ).scalars()
         findings = [self._finding_repository.to_model(finding_row) for finding_row in finding_rows]
 

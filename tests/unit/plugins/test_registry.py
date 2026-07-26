@@ -41,7 +41,7 @@ class _FakePayload(BaseModel):
 class _FakeAdapter(Adapter[_FakePayload]):
     adapter_id = "test-fake-adapter"
     version = "0.0.1"
-    governing_policy_id = "test-fake-policy"
+    governing_policy_ids = ("test-fake-policy",)
 
     def translate(self, raw_payload: _FakePayload) -> DecisionEvent:
         raise NotImplementedError
@@ -123,7 +123,7 @@ def test_register_adapter_decorator_returns_the_class_unchanged(
     registered_fake_adapter: type[_FakeAdapter],
 ) -> None:
     assert registered_fake_adapter.adapter_id == "test-fake-adapter"
-    assert registered_fake_adapter.governing_policy_id == "test-fake-policy"
+    assert registered_fake_adapter.governing_policy_ids == ("test-fake-policy",)
 
 
 def test_the_two_real_first_party_adapters_are_registered_once_bootstrapped() -> None:
@@ -132,7 +132,10 @@ def test_the_two_real_first_party_adapters_are_registered_once_bootstrapped() ->
     bootstrap_plugins()
 
     assert ("synthetic", "0.1.0") in known_adapter_keys()
-    assert ("credit-scorecard", "0.1.0") in known_adapter_keys()
+    # M4: credit-scorecard is 0.2.0 now (two governing policies) -- 0.1.0
+    # is no longer deployed in this process at all, per
+    # docs/milestones/M4.md §13.11.
+    assert ("credit-scorecard", "0.2.0") in known_adapter_keys()
 
 
 def test_the_two_real_first_party_policies_are_registered_once_bootstrapped() -> None:
@@ -142,3 +145,11 @@ def test_the_two_real_first_party_policies_are_registered_once_bootstrapped() ->
 
     assert ("always-allow", "0.1.0") in known_policy_keys()
     assert ("direct-attribute-in-inputs", "0.1.0") in known_policy_keys()
+
+
+def test_the_m4_second_policy_is_registered_once_bootstrapped() -> None:
+    from gov_platform.plugins.bootstrap import bootstrap_plugins
+
+    bootstrap_plugins()
+
+    assert ("high-debt-ratio-gate", "0.1.0") in known_policy_keys()

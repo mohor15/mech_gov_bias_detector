@@ -161,6 +161,27 @@ def test_credit_scorecard_and_synthetic_routes_share_one_evidence_chain(
 
 
 @requires_postgres
+def test_credit_scorecard_ingestion_flags_a_high_debt_ratio(
+    api_client: TestClient, credit_scorecard_payload_json: dict[str, object]
+) -> None:
+    # M4: credit-scorecard now has two independent governing policies.
+    # This payload has no protected-attribute leak at all -- only
+    # high-debt-ratio-gate has anything to object to -- proving genuine
+    # disagreement-driven aggregation, not just "the fairness policy that
+    # already flagged everything in M2/M3 still does."
+    payload = dict(credit_scorecard_payload_json)
+    payload["decision_id"] = f"score-{uuid4()}"
+    feature_vector = dict(payload["feature_vector"])  # type: ignore[arg-type]
+    feature_vector["debt_to_income"] = 0.55
+    payload["feature_vector"] = feature_vector
+
+    response = api_client.post("/v1/ingestion/events/credit-scorecard", json=payload)
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "FLAGGED"
+
+
+@requires_postgres
 def test_credit_scorecard_unrecognized_protected_attribute_returns_422_not_500(
     api_client: TestClient, credit_scorecard_payload_json: dict[str, object]
 ) -> None:

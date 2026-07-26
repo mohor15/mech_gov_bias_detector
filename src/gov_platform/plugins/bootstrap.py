@@ -21,6 +21,9 @@ from gov_platform.policy_engine.policies import always_allow as _always_allow  #
 from gov_platform.policy_engine.policies import (  # noqa: F401
     direct_attribute_in_inputs as _direct_attribute_in_inputs,
 )
+from gov_platform.policy_engine.policies import (  # noqa: F401
+    high_debt_ratio_gate as _high_debt_ratio_gate,
+)
 
 
 def bootstrap_plugins() -> None:

@@ -62,7 +62,7 @@ def _translate(payload: _TestPayload, system_id: str) -> DecisionEvent:
 class _NeverRegisteredAdapter(Adapter[_TestPayload]):
     adapter_id = "test-never-registered-adapter"
     version = "1.0.0"
-    governing_policy_id = "always-allow"
+    governing_policy_ids = ("always-allow",)
 
     def translate(self, raw_payload: _TestPayload) -> DecisionEvent:
         raise NotImplementedError  # never reached -- rejected before this runs
@@ -97,7 +97,7 @@ class _OrphanPolicyAdapter(Adapter[_TestPayload]):
     # fixed version would collide with a previous run's row the moment
     # this test executed twice against the same database.
     version = f"1.0.0-{uuid4()}"
-    governing_policy_id = "test-policy-family-nothing-is-registered-under"
+    governing_policy_ids = ("test-policy-family-nothing-is-registered-under",)
 
     def translate(self, raw_payload: _TestPayload) -> DecisionEvent:
         return _translate(raw_payload, "test-orphan-system")
@@ -156,7 +156,7 @@ class _RolledBackPolicy(Policy):
 class _RolledBackPolicyAdapter(Adapter[_TestPayload]):
     adapter_id = "test-rolled-back-policy-adapter"
     version = f"1.0.0-{uuid4()}"
-    governing_policy_id = "test-rolled-back-policy"
+    governing_policy_ids = ("test-rolled-back-policy",)
 
     def translate(self, raw_payload: _TestPayload) -> DecisionEvent:
         return _translate(raw_payload, "test-rolled-back-system")
@@ -212,6 +212,95 @@ def test_a_production_policy_no_longer_deployed_in_process_returns_503(
     assert "no longer deployed in this process" in response.json()["detail"]
 
 
+class _NormalPolicy(Policy):
+    policy_id = "test-m4-normal-policy"
+    version = f"1.0.0-{uuid4()}"
+
+    def evaluate(self, event: DecisionEvent) -> Finding:
+        return Finding(
+            finding_id=str(uuid4()),
+            decision_event_id=event.event_id,
+            policy_id=self.policy_id,
+            policy_version=self.version,
+            outcome=FindingOutcome.CLEAR,
+            confidence=1.0,
+            rationale="test",
+            metric_values={},
+            evaluated_at=datetime.now(UTC),
+        )
+
+
+class _RaisingPolicy(Policy):
+    policy_id = "test-m4-raising-policy"
+    version = f"1.0.0-{uuid4()}"
+
+    def evaluate(self, event: DecisionEvent) -> Finding:
+        raise RuntimeError("simulated policy failure")
+
+
+class _TwoPolicyAdapter(Adapter[_TestPayload]):
+    """M4: proves a failing PRODUCTION policy fails the whole request
+    rather than aggregating a partial finding set, even when it's only
+    one of *several* governing policies -- see
+    docs/milestones/M4.md §13.5."""
+
+    adapter_id = "test-m4-two-policy-adapter"
+    version = f"1.0.0-{uuid4()}"
+    governing_policy_ids = ("test-m4-normal-policy", "test-m4-raising-policy")
+
+    def translate(self, raw_payload: _TestPayload) -> DecisionEvent:
+        return _translate(raw_payload, "test-m4-two-policy-system")
+
+
+@pytest.fixture
+def app_with_one_raising_production_policy(test_settings: Settings, postgres_url: str):
+    register_adapter(_TwoPolicyAdapter)
+    register_policy(_NormalPolicy)
+    register_policy(_RaisingPolicy)
+    repository = PluginRegistrationRepository()
+    engine = create_db_engine(postgres_url)
+    with Session(engine) as session:
+        adapter_registration = repository.create(
+            session,
+            plugin_type=PluginType.ADAPTER,
+            plugin_id=_TwoPolicyAdapter.adapter_id,
+            version=_TwoPolicyAdapter.version,
+        )
+        adapter_registration = repository.promote(session, adapter_registration.id)
+        repository.promote(session, adapter_registration.id)
+
+        for policy_cls in (_NormalPolicy, _RaisingPolicy):
+            policy_registration = repository.create(
+                session,
+                plugin_type=PluginType.POLICY,
+                plugin_id=policy_cls.policy_id,
+                version=policy_cls.version,
+            )
+            policy_registration = repository.promote(session, policy_registration.id)
+            repository.promote(session, policy_registration.id)
+        session.commit()
+
+    try:
+        yield create_app(settings=test_settings)
+    finally:
+        unregister_adapter(_TwoPolicyAdapter.adapter_id, _TwoPolicyAdapter.version)
+        unregister_policy(_NormalPolicy.policy_id, _NormalPolicy.version)
+        unregister_policy(_RaisingPolicy.policy_id, _RaisingPolicy.version)
+
+
+def test_one_of_several_production_policies_raising_fails_the_whole_request(
+    app_with_one_raising_production_policy,
+) -> None:
+    client = TestClient(app_with_one_raising_production_policy, raise_server_exceptions=False)
+    response = client.post(
+        "/v1/ingestion/events/test-m4-two-policy-adapter",
+        json={"event_id": f"evt-{uuid4()}"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "internal server error"}
+
+
 class _SlowPolicy(Policy):
     policy_id = "test-slow-policy"
     version = f"1.0.0-{uuid4()}"
@@ -234,7 +323,7 @@ class _SlowPolicy(Policy):
 class _SlowPolicyAdapter(Adapter[_TestPayload]):
     adapter_id = "test-slow-policy-adapter"
     version = f"1.0.0-{uuid4()}"
-    governing_policy_id = "test-slow-policy"
+    governing_policy_ids = ("test-slow-policy",)
 
     def translate(self, raw_payload: _TestPayload) -> DecisionEvent:
         return _translate(raw_payload, "test-slow-system")

@@ -5,6 +5,32 @@ grouped by milestone (`ARCH-GOV-002` / `IMPL-GOV-001`), not by release date,
 since this project ships as a sequence of frozen, incremental milestones
 rather than continuous releases.
 
+## [0.5.0-m4] — 2026-07-27 — M4: Policy Plurality & Disagreement Surfacing
+
+`GovernanceEngine` now runs more than one `Policy` against a single
+Decision Event and aggregates their Findings into one Verdict — the
+platform's first real multi-policy governance decision. Full design
+rationale, decisions, and the production-readiness review:
+[`docs/milestones/M4.md`](docs/milestones/M4.md).
+
+### Added
+- `policy_engine/policies/high_debt_ratio_gate.py` — the second real policy: a plain `debt_to_income` threshold gate (CFPB ATR/QM's 0.43, cited for concrete provenance), deliberately not another fairness check.
+- `GovernanceEngine(policies: list[Policy])` — aggregates via any-`FLAGGED`-wins; raises `ValueError` for an empty list; a raising policy propagates uncaught rather than producing a partial verdict.
+- `Adapter.governing_policy_ids: tuple[str, ...]` — widened from M3's singular `governing_policy_id`, still static and code-defined (dynamic, admin-managed binding remains M5's Policy Bindings, not this).
+
+### Changed
+- `CreditScorecardAdapter` retrofitted to `0.2.0`, now governed by both `direct-attribute-in-inputs` and `high-debt-ratio-gate` — registered and promoted through the existing M3 plugin lifecycle, not a silent change to what `0.1.0` meant while `PRODUCTION`. Verified live: promoting `0.2.0` correctly auto-demoted `0.1.0` to `SHADOW`.
+- `api/ingestion/routes.py`'s per-request policy resolution now loops over every declared governing policy family, collecting all `PRODUCTION` policies into one `GovernanceEngine`; any family missing one fails the whole request.
+- `db/repositories/verdict.py`'s read order gains `policy_id` as a secondary sort key, closing a rare tie-break gap now that a verdict can have more than one finding.
+- `SyntheticAdapter` — mechanical `governing_policy_id` → `governing_policy_ids` update, no version bump, no behavior change.
+
+### Fixed
+_(found during this milestone's own production-readiness review, before freeze)_
+- Several module docstrings (`governance_engine/__init__.py`, `policy_engine/__init__.py`, `api/admin/__init__.py`) still described policy plurality and Admin API scope in future tense after this milestone made them real — updated to the current, accurate state.
+
+### Deferred
+No schema changes were needed this milestone — `verdict_findings` and the repository layer were built with plurality in mind since M1. No new Admin API surface was needed either — an adapter's governing policies stay static, administered through M3's existing plugin registry endpoints. See `docs/milestones/M4.md` for the full account. Policy Bindings and the full four-state verdict model (M5), async ingestion and population-level policies (M6), encryption at rest (M11).
+
 ## [0.4.0-m3] — 2026-07-26 — M3: Plugin Registry, Lifecycle & Sandboxing
 
 Replaces M2's two hand-wired adapter/policy pairs with a real plugin

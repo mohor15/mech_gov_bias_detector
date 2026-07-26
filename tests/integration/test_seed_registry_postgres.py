@@ -37,7 +37,7 @@ class _FreshTestAdapter(Adapter[_FreshTestPayload]):
 
     adapter_id = "test-fresh-seed-adapter"
     version = f"1.0.0-{uuid4()}"
-    governing_policy_id = "always-allow"
+    governing_policy_ids = ("always-allow",)
 
     def translate(self, raw_payload: _FreshTestPayload) -> DecisionEvent:
         raise NotImplementedError
@@ -81,7 +81,7 @@ def test_main_is_idempotent_on_a_second_run(
     )
 
 
-def test_main_seeds_the_four_real_first_party_plugins(
+def test_main_seeds_the_real_first_party_plugins(
     postgres_url: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # By the time this runs, the session-wide fixture has already seeded
@@ -96,3 +96,4 @@ def test_main_seeds_the_four_real_first_party_plugins(
     assert "ADAPTER credit-scorecard" in output
     assert "POLICY always-allow" in output
     assert "POLICY direct-attribute-in-inputs" in output
+    assert "POLICY high-debt-ratio-gate" in output  # M4's second real policy

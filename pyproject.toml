@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gov-platform"
-version = "0.4.0"
-description = "Domain-agnostic AI Governance Platform (V2) — M3: plugin registry, lifecycle, and sandboxing."
+version = "0.5.0"
+description = "Domain-agnostic AI Governance Platform (V2) — M4: policy plurality and disagreement surfacing."
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [

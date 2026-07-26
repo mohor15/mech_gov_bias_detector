@@ -31,6 +31,7 @@ from gov_platform.db.repositories.protected_attribute_resolution import (
     ProtectedAttributeResolutionRepository,
 )
 from gov_platform.db.repositories.system import SystemRepository
+from gov_platform.db.repositories.verdict import VerdictRepository
 from gov_platform.schemas.finding import Finding, FindingOutcome
 from gov_platform.schemas.protected_attribute import ProtectedAttributeClassification
 from gov_platform.schemas.verdict import GovernanceVerdict, VerdictStatus
@@ -268,3 +269,56 @@ def test_append_rolls_back_entirely_when_resolution_rejects_the_event(
 
     with Session(db_engine) as session:
         assert DecisionEventRepository().get(session, event.event_id) is None
+
+
+def test_append_persists_all_findings_from_a_multi_policy_verdict_in_order(
+    evidence_store: EvidenceStore, make_decision_event, db_engine
+) -> None:
+    # M4: policy plurality. Both findings deliberately share the same
+    # evaluated_at timestamp -- this is what actually exercises
+    # VerdictRepository.get's policy_id secondary sort key (see
+    # docs/milestones/M4.md §13.7); without it, read order for two rows
+    # with an identical primary sort key is undefined.
+    event = make_decision_event(event_id=_unique_event_id())
+    evaluated_at = datetime(2026, 1, 1, tzinfo=UTC)
+    finding_a = Finding(
+        finding_id=f"find-a-{uuid4()}",
+        decision_event_id=event.event_id,
+        policy_id="direct-attribute-in-inputs",
+        policy_version="0.1.0",
+        outcome=FindingOutcome.CLEAR,
+        confidence=1.0,
+        rationale="test",
+        metric_values={},
+        evaluated_at=evaluated_at,
+    )
+    finding_b = Finding(
+        finding_id=f"find-b-{uuid4()}",
+        decision_event_id=event.event_id,
+        policy_id="high-debt-ratio-gate",
+        policy_version="0.1.0",
+        outcome=FindingOutcome.FLAGGED,
+        confidence=1.0,
+        rationale="test",
+        metric_values={"debt_to_income": 0.9},
+        evaluated_at=evaluated_at,
+    )
+    verdict = GovernanceVerdict(
+        verdict_id=str(uuid4()),
+        decision_event_id=event.event_id,
+        status=VerdictStatus.FLAGGED,
+        findings=[finding_a, finding_b],
+        created_at=evaluated_at,
+    )
+
+    evidence_store.append(event, verdict)
+
+    with Session(db_engine) as session:
+        persisted = VerdictRepository().get(session, verdict.verdict_id)
+
+    assert persisted is not None
+    assert persisted.status is VerdictStatus.FLAGGED
+    assert [f.policy_id for f in persisted.findings] == [
+        "direct-attribute-in-inputs",
+        "high-debt-ratio-gate",
+    ]

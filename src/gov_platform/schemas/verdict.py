@@ -28,10 +28,11 @@ class GovernanceVerdict(BaseModel):
     """The Governance Engine's output: one or more Findings, aggregated.
 
     ``findings`` is plural because that is what a Verdict *is* per the
-    architecture, even though M0's `GovernanceEngine` only ever runs one
-    `Policy` and this list therefore always has length 1 today. Real
-    multi-policy aggregation — and the disagreement handling that goes with
-    it — is M4 scope.
+    architecture — M0 through M3's `GovernanceEngine` only ever ran one
+    `Policy`, so this list only ever had length 1 until M4, which is when
+    real multi-policy aggregation and disagreement handling arrived (an
+    adapter with more than one governing policy now produces a Verdict
+    with more than one Finding here).
     """
 
     model_config = ConfigDict(frozen=True)
