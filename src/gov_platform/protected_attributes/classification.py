@@ -1,14 +1,14 @@
 """Static, code-defined protected-attribute classification rules — M2.
 
-Not admin-configurable data — a deliberate M2 scope decision (see
-`docs/milestones/M2.md` §11.5). DB-backed, per-tenant rule configuration
-is real functionality a compliance team would eventually need to change
-without a code deploy, but it belongs to a later milestone (M3's plugin
-config, or M5's Policy Bindings — "which policy applies to which
-domain/jurisdiction" is explicitly M5-owned per
-`governance_engine/engine.py`'s docstring), not this one. Keeping rules in
-code, keyed by `System.domain`, mirrors `AlwaysAllowPolicy`'s own
-simplicity and needs no new API surface.
+Not admin-configurable data itself — a deliberate M2 scope decision (see
+`docs/milestones/M2.md` §11.5) that this module still honors. M5 added a
+DB-backed, admin-configurable alternative (`protected_attribute_rules`,
+consulted via `protected_attributes/resolver.py`'s optional `Engine` mode)
+for `EvidenceStore`'s resolution path specifically — but
+`DirectAttributeInInputsPolicy` deliberately still reads these static
+rules directly, a named, temporary divergence (see
+`docs/milestones/M5.md` §13.9), not an oversight. This module itself,
+and the rules it defines, remain unchanged by M5.
 """
 
 from __future__ import annotations

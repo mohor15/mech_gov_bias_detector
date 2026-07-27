@@ -41,6 +41,17 @@ the other five writes already have. A domain with no classification
 ruleset (see `protected_attributes/classification.py`) resolves to an
 empty list, so this is a strict addition: ingestion for systems outside
 any domain M2 governs is unaffected.
+
+M5 adds two more things, both additive: `ProtectedAttributeResolver` is now
+constructed with this store's own `Engine`, switching its rule lookup from
+`classification.py`'s static ruleset to the DB-backed
+`protected_attribute_rules` table (see `protected_attributes/resolver.py`
+and `docs/milestones/M5.md` §13.9 for why `DirectAttributeInInputsPolicy`
+deliberately does not make the same switch). And every appended record's
+`record_hash` is now signed (`audit/signing.py`) before being persisted —
+`EvidenceRecord` gains `signature`/`signing_key_id`, both `None` for
+records written before M5 (see `schemas/verdict.py`'s docstring on why
+those are never rewritten).
 """
 
 from __future__ import annotations
@@ -55,6 +66,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from gov_platform.audit.hash_chain import GENESIS_HASH, canonical_json, compute_hash
+from gov_platform.audit.signing import EvidenceSigner, load_signer
 from gov_platform.db.models import EvidenceChainRow
 from gov_platform.db.repositories.decision_event import DecisionEventRepository
 from gov_platform.db.repositories.finding import FindingRepository
@@ -76,7 +88,8 @@ _ADVISORY_LOCK_KEY = 913_411_007
 
 
 class EvidenceRecord(BaseModel):
-    """Read-facing view of a persisted evidence record. Unchanged from M0."""
+    """Read-facing view of a persisted evidence record. `signature`/
+    `signing_key_id` are `None` for records written before M5."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -87,13 +100,19 @@ class EvidenceRecord(BaseModel):
     previous_hash: str
     record_hash: str
     recorded_at: datetime
+    signature: str | None = None
+    signing_key_id: str | None = None
 
 
 class EvidenceStore:
     """Append-only, hash-chained ledger of governed Decision Events."""
 
     def __init__(
-        self, engine: Engine, *, resolver: ProtectedAttributeResolver | None = None
+        self,
+        engine: Engine,
+        *,
+        resolver: ProtectedAttributeResolver | None = None,
+        signer: EvidenceSigner | None = None,
     ) -> None:
         self._engine = engine
         self._system_repo = SystemRepository()
@@ -102,7 +121,8 @@ class EvidenceStore:
         self._finding_repo = FindingRepository()
         self._verdict_repo = VerdictRepository(self._finding_repo)
         self._protected_attribute_repo = ProtectedAttributeResolutionRepository()
-        self._resolver = resolver or ProtectedAttributeResolver()
+        self._resolver = resolver or ProtectedAttributeResolver(engine=engine)
+        self._signer = signer or load_signer(None)
 
     def append(self, decision_event: DecisionEvent, verdict: GovernanceVerdict) -> EvidenceRecord:
         """Persist one Decision Event + Verdict pair, atomically, as the
@@ -138,6 +158,7 @@ class EvidenceStore:
             previous_hash = self._latest_hash(session)
             record_hash = compute_hash(previous_hash, payload_json)
             recorded_at = datetime.now(UTC)
+            signature = self._signer.sign(record_hash)
 
             chain_row = EvidenceChainRow(
                 decision_event_id=decision_event.event_id,
@@ -146,6 +167,8 @@ class EvidenceStore:
                 previous_hash=previous_hash,
                 record_hash=record_hash,
                 recorded_at=recorded_at,
+                signature=signature,
+                signing_key_id=self._signer.key_id,
             )
             session.add(chain_row)
             session.commit()
@@ -159,6 +182,8 @@ class EvidenceStore:
                 previous_hash=chain_row.previous_hash,
                 record_hash=chain_row.record_hash,
                 recorded_at=chain_row.recorded_at,
+                signature=chain_row.signature,
+                signing_key_id=chain_row.signing_key_id,
             )
 
     def get(self, sequence_number: int) -> EvidenceRecord | None:
@@ -191,4 +216,6 @@ class EvidenceStore:
             previous_hash=row.previous_hash,
             record_hash=row.record_hash,
             recorded_at=row.recorded_at,
+            signature=row.signature,
+            signing_key_id=row.signing_key_id,
         )

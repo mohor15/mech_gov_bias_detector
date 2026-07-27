@@ -40,7 +40,7 @@ pytestmark = requires_postgres
 def _make_always_flags_shadow_policy() -> type[Policy]:
     """A fresh class per call, with its own fresh version — shares
     `direct-attribute-in-inputs`'s policy_id (one of the two families
-    `CreditScorecardAdapter.governing_policy_ids` names) so it registers
+    bound to `credit-scorecard` via `policy_bindings`) so it registers
     as a second, SHADOW-state candidate alongside the real PRODUCTION
     `0.1.0`. Built fresh per fixture invocation, not a module-level
     singleton: `plugin_registrations` is never truncated between test
@@ -138,9 +138,10 @@ def test_shadow_candidate_for_one_family_does_not_affect_the_other_familys_findi
     response = api_client.post("/v1/ingestion/events/credit-scorecard", json=payload)
 
     assert response.status_code == 201
-    # FLAGGED because of the real debt-ratio finding, not the shadow
+    # ESCALATE_FOR_REVIEW because of the real debt-ratio finding
+    # (high-debt-ratio-gate is bound at MEDIUM severity), not the shadow
     # candidate's opinion on the unrelated fairness family.
-    assert response.json()["status"] == "FLAGGED"
+    assert response.json()["status"] == "ESCALATE_FOR_REVIEW"
 
     with Session(db_engine) as session:
         verdict = VerdictRepository().get(session, response.json()["verdict_id"])

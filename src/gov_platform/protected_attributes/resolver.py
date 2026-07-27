@@ -1,9 +1,9 @@
 """The Protected Attribute Resolution Service — architecture §4.3, M2.
 
 Classifies each of a Decision Event's supplied protected attributes as
-`DIRECT` or `PROXIED` per the domain's static ruleset
-(`classification.py`), and emits a `WITHHELD` resolution for every
-attribute the domain expects but the event didn't supply.
+`DIRECT` or `PROXIED` per a domain's ruleset, and emits a `WITHHELD`
+resolution for every attribute the domain expects but the event didn't
+supply.
 
 A concrete service, not a port/ABC — unlike `Adapter`/`Policy`, this has
 exactly one implementation and no second resolution strategy to justify
@@ -13,20 +13,35 @@ repeat the "speculative generality" mistake M0/M1 have consistently
 avoided elsewhere. Mirrors `NormalizationService`'s shape, not
 `Adapter`/`Policy`'s.
 
-Pure and DB-free: takes a `DecisionEvent` and a domain string, returns
-`list[ResolvedProtectedAttribute]`. Deliberately does not look up
-`System.domain` itself — callers supply it, because they get it
-differently. `EvidenceStore` already has a live `System` row mid-transaction
-and passes its real `domain`. `DirectAttributeInInputsPolicy` has no
-database access at all (by design — see its own docstring) and is instead
-constructed with a fixed domain matching the one system/route it governs.
+Deliberately does not look up `System.domain` itself — callers supply it,
+because they get it differently. `EvidenceStore` already has a live
+`System` row mid-transaction and passes its real `domain`.
+`DirectAttributeInInputsPolicy` has no database access at all (by design —
+see its own docstring) and is instead constructed with a fixed domain
+matching the one system/route it governs.
+
+M5: the ruleset source is chosen once, at construction — the static,
+in-code `classification.py` rules by default (zero-argument construction,
+unchanged, still what `DirectAttributeInInputsPolicy` uses), or the
+DB-backed `protected_attribute_rules` table when constructed with an
+`Engine` (what `EvidenceStore` uses from M5 onward). This is a deliberate,
+named divergence between the two consumers, not an oversight — giving a
+zero-argument-constructed `Policy` database access would be a real `Policy`
+port change this milestone does not make. See `docs/milestones/M5.md`
+§13.9 for the full reasoning.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from gov_platform.protected_attributes.classification import rules_for_domain
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
+
+from gov_platform.protected_attributes.classification import (
+    DomainProtectedAttributeRules,
+    rules_for_domain,
+)
 from gov_platform.schemas.decision_event import DecisionEvent
 from gov_platform.schemas.protected_attribute import (
     ProtectedAttributeClassification,
@@ -36,6 +51,25 @@ from gov_platform.schemas.protected_attribute import (
 
 class ProtectedAttributeResolver:
     """Resolves one Decision Event's protected attributes for one domain."""
+
+    def __init__(self, *, engine: Engine | None = None) -> None:
+        self._engine = engine
+
+    def _rules_for_domain(self, domain: str | None) -> DomainProtectedAttributeRules | None:
+        if domain is None:
+            return None
+        if self._engine is None:
+            return rules_for_domain(domain)
+
+        # Local import: avoids a module-level cycle (this module has never
+        # depended on `db` before M5; the DB-backed path is the one place
+        # that needs to).
+        from gov_platform.db.repositories.protected_attribute_rule import (
+            ProtectedAttributeRuleRepository,
+        )
+
+        with Session(self._engine) as session:
+            return ProtectedAttributeRuleRepository().rules_for_domain(session, domain)
 
     def resolve(
         self, event: DecisionEvent, *, domain: str | None
@@ -56,7 +90,7 @@ class ProtectedAttributeResolver:
         rejected in favor of an enforced guarantee (see
         `docs/milestones/M2.md` §10).
         """
-        rules = rules_for_domain(domain)
+        rules = self._rules_for_domain(domain)
         if rules is None:
             return []
 
@@ -65,8 +99,7 @@ class ProtectedAttributeResolver:
         if unrecognized:
             raise ValueError(
                 f"protected attribute(s) {sorted(unrecognized)} supplied for domain "
-                f"{domain!r} have no classification rule in "
-                "protected_attributes/classification.py"
+                f"{domain!r} have no classification rule"
             )
 
         resolved_at = datetime.now(UTC)

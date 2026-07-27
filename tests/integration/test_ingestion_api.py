@@ -135,7 +135,10 @@ def test_credit_scorecard_ingestion_flags_a_direct_attribute_leak(
     response = api_client.post("/v1/ingestion/events/credit-scorecard", json=payload)
 
     assert response.status_code == 201
-    assert response.json()["status"] == "FLAGGED"
+    # direct-attribute-in-inputs is bound at HIGH severity -- a direct
+    # protected-attribute leak into model inputs is a real fair-lending
+    # violation, not just an advisory flag.
+    assert response.json()["status"] == "RECOMMEND_HOLD"
 
 
 @requires_postgres
@@ -178,7 +181,9 @@ def test_credit_scorecard_ingestion_flags_a_high_debt_ratio(
     response = api_client.post("/v1/ingestion/events/credit-scorecard", json=payload)
 
     assert response.status_code == 201
-    assert response.json()["status"] == "FLAGGED"
+    # high-debt-ratio-gate is bound at MEDIUM severity -- a risk flag
+    # warrants review, not an automatic hold.
+    assert response.json()["status"] == "ESCALATE_FOR_REVIEW"
 
 
 @requires_postgres

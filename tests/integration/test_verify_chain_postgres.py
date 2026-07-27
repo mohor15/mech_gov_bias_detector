@@ -10,7 +10,10 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy.engine import Engine
+
 from gov_platform.audit.evidence_store import EvidenceStore
+from gov_platform.audit.signing import load_signer
 from gov_platform.audit.verify_chain import main, verify_chain_from_database
 from gov_platform.schemas.finding import Finding, FindingOutcome
 from gov_platform.schemas.verdict import GovernanceVerdict, VerdictStatus
@@ -62,3 +65,20 @@ def test_cli_main_prints_the_result_and_exits_zero_when_valid(
 
     assert exit_code == 0
     assert "chain valid" in capsys.readouterr().out
+
+
+def test_cli_main_fails_when_public_key_does_not_match_the_signing_key(
+    db_engine: Engine, make_decision_event: Any, postgres_url: str, capsys: Any
+) -> None:
+    signer = load_signer(None)
+    wrong_signer = load_signer(None)
+    store = EvidenceStore(db_engine, signer=signer)
+    event = make_decision_event(event_id=f"evt-{uuid4()}")
+    store.append(event, _verdict(event.event_id, str(uuid4())))
+
+    exit_code = main(
+        ["--database-url", postgres_url, "--public-key", wrong_signer.public_key_hex()]
+    )
+
+    assert exit_code == 1
+    assert "signature" in capsys.readouterr().out

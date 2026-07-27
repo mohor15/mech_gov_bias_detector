@@ -139,3 +139,29 @@ class EvidenceChainRow(Base):
     previous_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     record_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # M5: nullable -- signing applies going forward only, see
+    # schemas/verdict.py's docstring on why M0-M4 rows are never rewritten.
+    signature: Mapped[str | None] = mapped_column(Text, nullable=True)
+    signing_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class PolicyBindingRow(Base):
+    __tablename__ = "policy_bindings"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    adapter_id: Mapped[str] = mapped_column(String, nullable=False)
+    policy_id: Mapped[str] = mapped_column(String, nullable=False)
+    severity: Mapped[str] = mapped_column(String, nullable=False)
+    lifecycle_state: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ProtectedAttributeRuleRow(Base):
+    __tablename__ = "protected_attribute_rules"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    domain: Mapped[str] = mapped_column(String, nullable=False)
+    attribute_name: Mapped[str] = mapped_column(String, nullable=False)
+    classification: Mapped[str] = mapped_column(String, nullable=False)
+    proxy_of: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

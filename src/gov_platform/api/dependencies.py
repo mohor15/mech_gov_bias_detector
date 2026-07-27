@@ -23,6 +23,10 @@ composition root for every new adapter" problem M3 exists to remove).
 `get_plugin_registration_repository` and `get_shadow_finding_repository`
 are new — needed by both the Admin Plugins API and the generated ingestion
 routes' per-request policy-lifecycle lookups.
+
+M5: `get_policy_binding_repository` and `get_protected_attribute_rule_repository`
+are new — needed by the new Admin API surfaces and (the former) by the
+generated ingestion routes' per-request policy resolution.
 """
 
 from __future__ import annotations
@@ -32,6 +36,8 @@ from sqlalchemy.engine import Engine
 
 from gov_platform.audit.evidence_store import EvidenceStore
 from gov_platform.db.repositories.plugin_registration import PluginRegistrationRepository
+from gov_platform.db.repositories.policy_binding import PolicyBindingRepository
+from gov_platform.db.repositories.protected_attribute_rule import ProtectedAttributeRuleRepository
 from gov_platform.db.repositories.shadow_finding import ShadowFindingRepository
 from gov_platform.db.repositories.system import SystemRepository
 from gov_platform.normalization.service import NormalizationService
@@ -67,4 +73,18 @@ def get_plugin_registration_repository(request: Request) -> PluginRegistrationRe
 
 def get_shadow_finding_repository(request: Request) -> ShadowFindingRepository:
     repository: ShadowFindingRepository = request.app.state.shadow_finding_repository
+    return repository
+
+
+def get_policy_binding_repository(request: Request) -> PolicyBindingRepository:
+    repository: PolicyBindingRepository = request.app.state.policy_binding_repository
+    return repository
+
+
+def get_protected_attribute_rule_repository(
+    request: Request,
+) -> ProtectedAttributeRuleRepository:
+    repository: ProtectedAttributeRuleRepository = (
+        request.app.state.protected_attribute_rule_repository
+    )
     return repository

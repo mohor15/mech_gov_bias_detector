@@ -59,23 +59,23 @@ class CreditScorecardAdapter(Adapter[CreditScorecardPayload]):
     `Adapter[TPayload]`'s port generalizes beyond `SyntheticAdapter`, the
     one case it was built and tested against through M0/M1.
 
-    `version = "0.2.0"`: M4 adds a second governing policy
+    `version = "0.2.0"`: M4 added a second governing policy
     (`high-debt-ratio-gate`, a plain risk gate, alongside M2's fairness
-    gate `direct-attribute-in-inputs`) — a real behavior change, so this
-    is registered as a new version through the plugin registry's normal
+    gate `direct-attribute-in-inputs`) — a real behavior change, registered
+    as a new version through the plugin registry's normal
     draft -> shadow -> production lifecycle (see
     `docs/milestones/M4.md` §13.11), not a silent change to what `0.1.0`
-    meant while it was already `PRODUCTION`. `0.1.0`'s registration is
-    left exactly as it was — it simply has no corresponding code in this
-    process anymore once this version bump ships, the same
-    "registered but no longer deployed" case M3's own `PluginRegistrationRepository`
-    is built to handle cleanly (a `503`, not a crash, for anything still
-    pointed at it).
+    meant while it was already `PRODUCTION`.
+
+    M5: both governing policies now live as `PolicyBinding` rows keyed by
+    `adapter_id` (seeded by `plugins/seed_registry.py`) instead of a class
+    attribute here — a pure storage-location change (which policies govern
+    this adapter is unchanged), not a behavior change, so no further
+    version bump. See `adapters/base.py`'s docstring.
     """
 
     adapter_id = "credit-scorecard"
     version = "0.2.0"
-    governing_policy_ids = ("direct-attribute-in-inputs", "high-debt-ratio-gate")
 
     def translate(self, raw_payload: CreditScorecardPayload) -> DecisionEvent:
         return DecisionEvent(

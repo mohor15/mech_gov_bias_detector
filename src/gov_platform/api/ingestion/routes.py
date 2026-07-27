@@ -42,14 +42,26 @@ policies (see `docs/milestones/M3.md`'s production-readiness review).
 Handlers are plain `def`, not `async def` — same reasoning as M0's
 original ingestion route: every operation here is synchronous.
 
-M4: an adapter can declare more than one `governing_policy_ids` family
-(architecture §8, policy plurality — see `docs/milestones/M4.md`). The
-per-request resolution loop below now runs once per declared family,
-collecting one `PRODUCTION` policy from each into a single
-`GovernanceEngine`, which aggregates their Findings into one Verdict.
-Any family missing a live `PRODUCTION` policy fails the whole request —
-no verdict is ever built from a partial policy set. `SHADOW` execution
-is unaffected: it was already scoped per policy family, not per adapter.
+M4: an adapter can be governed by more than one policy family (architecture
+§8, policy plurality — see `docs/milestones/M4.md`). The per-request
+resolution loop below runs once per governing family, collecting one
+`PRODUCTION` policy from each into a single `GovernanceEngine`, which
+aggregates their Findings into one Verdict. Any family missing a live
+`PRODUCTION` policy fails the whole request — no verdict is ever built from
+a partial policy set. `SHADOW` execution is unaffected: it was already
+scoped per policy family, not per adapter.
+
+M5: which families govern an adapter is resolved from `policy_bindings`
+(`PolicyBindingRepository.list_active_for_adapter`), not a
+`governing_policy_ids` class attribute — a database fact, changeable via
+the Admin API without a redeploy, the same "no app restart needed"
+property M3 already established for lifecycle promotion. Each active
+binding also carries a `PolicySeverity`, bundled with its resolved
+`Policy` into a `GoverningPolicy` so `GovernanceEngine` can compute the
+real four-state `VerdictStatus` (see `governance_engine/engine.py`) instead
+of M4's binary placeholder. An adapter with zero active bindings fails the
+whole request with a 503, the same "no partial governance" discipline
+applied to a single missing family.
 """
 
 from __future__ import annotations
@@ -70,16 +82,17 @@ from gov_platform.api.dependencies import (
     get_evidence_store,
     get_normalization_service,
     get_plugin_registration_repository,
+    get_policy_binding_repository,
     get_shadow_finding_repository,
 )
 from gov_platform.audit.evidence_store import EvidenceStore
 from gov_platform.db.repositories.plugin_registration import PluginRegistrationRepository
+from gov_platform.db.repositories.policy_binding import PolicyBindingRepository
 from gov_platform.db.repositories.shadow_finding import ShadowFindingRepository
-from gov_platform.governance_engine.engine import GovernanceEngine
+from gov_platform.governance_engine.engine import GovernanceEngine, GoverningPolicy
 from gov_platform.normalization.service import NormalizationService
 from gov_platform.plugins import registry
 from gov_platform.plugins.sandbox import run_sandboxed
-from gov_platform.policy_engine.base import Policy
 from gov_platform.schemas.plugin_registration import (
     PluginLifecycleState,
     PluginRegistration,
@@ -119,6 +132,7 @@ def _build_handler(
         plugin_registration_repository: PluginRegistrationRepository = Depends(
             get_plugin_registration_repository
         ),
+        policy_binding_repository: PolicyBindingRepository = Depends(get_policy_binding_repository),
         shadow_finding_repository: ShadowFindingRepository = Depends(get_shadow_finding_repository),
     ) -> IngestionResponse:
         with Session(db_engine) as session:
@@ -139,18 +153,26 @@ def _build_handler(
         decision_event = run_sandboxed(lambda: adapter.translate(payload))
         normalized_event = normalization_service.normalize(decision_event)
 
-        # M4: one production policy per declared governing_policy_id,
-        # collected in declaration order so GovernanceEngine's findings
-        # come out deterministic (see docs/milestones/M4.md §4/§13.7) --
-        # and any family missing a PRODUCTION policy fails the whole
-        # request immediately, the same "no partial verdicts" discipline
-        # M3 already applied to a single family.
-        production_policies: list[Policy] = []
+        # M5: one production policy per active PolicyBinding, collected in
+        # binding-creation order so GovernanceEngine's findings come out
+        # deterministic (see docs/milestones/M4.md §4/§13.7) -- and any
+        # family missing a PRODUCTION policy fails the whole request
+        # immediately, the same "no partial verdicts" discipline M3
+        # already applied to a single family.
+        production_policies: list[GoverningPolicy] = []
         shadow_registrations: list[PluginRegistration] = []
         with Session(db_engine) as session:
-            for governing_policy_id in adapter.governing_policy_ids:
+            bindings = policy_binding_repository.list_active_for_adapter(
+                session, adapter.adapter_id
+            )
+            if not bindings:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"adapter '{adapter.adapter_id}' has no active policy bindings",
+                )
+            for binding in bindings:
                 policy_registrations = plugin_registration_repository.list_by_type_and_plugin_id(
-                    session, plugin_type=PluginType.POLICY, plugin_id=governing_policy_id
+                    session, plugin_type=PluginType.POLICY, plugin_id=binding.policy_id
                 )
                 production_registration = next(
                     (
@@ -163,7 +185,7 @@ def _build_handler(
                 if production_registration is None:
                     raise HTTPException(
                         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        detail=f"no PRODUCTION policy registered for '{governing_policy_id}'",
+                        detail=f"no PRODUCTION policy registered for '{binding.policy_id}'",
                     )
                 production_policy_cls = registry.get_policy_class(
                     production_registration.plugin_id, production_registration.version
@@ -177,14 +199,16 @@ def _build_handler(
                             "longer deployed in this process"
                         ),
                     )
-                production_policies.append(production_policy_cls())
+                production_policies.append(
+                    GoverningPolicy(policy=production_policy_cls(), severity=binding.severity)
+                )
                 shadow_registrations.extend(
                     r
                     for r in policy_registrations
                     if r.lifecycle_state is PluginLifecycleState.SHADOW
                 )
 
-        engine = GovernanceEngine(policies=production_policies)
+        engine = GovernanceEngine(governing_policies=production_policies)
         verdict = run_sandboxed(lambda: engine.govern(normalized_event))
         evidence_record = evidence_store.append(normalized_event, verdict)
 

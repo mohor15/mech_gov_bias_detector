@@ -192,9 +192,11 @@ def test_append_persists_protected_attribute_resolutions_for_a_known_domain(
     evidence_store: EvidenceStore, make_decision_event, db_engine
 ) -> None:
     # M2: the sixth-table write. Pre-registering the System with a domain
-    # `protected_attributes/classification.py` actually has rules for is
-    # what makes this meaningful — see that module's docstring on `None`
-    # domains resolving to nothing.
+    # `protected_attribute_rules` actually has rows for (M5: DB-backed,
+    # seeded from classification.py's static FINANCE ruleset — see
+    # conftest._seed_plugin_registry) is what makes this meaningful — see
+    # ProtectedAttributeResolver's docstring on `None` domains resolving to
+    # nothing.
     system_name = f"finance-system-{uuid4()}"
     with Session(db_engine) as session:
         SystemRepository().create(session, name=system_name, domain="FINANCE")

@@ -46,6 +46,13 @@ def _seed_plugin_registry() -> None:
     every time and every ingestion test needs it. No-ops if POSTGRES_URL
     isn't set — tests that don't need Postgres are unaffected, same as
     every other DB-dependent fixture in this file.
+
+    M5: also seeds the equivalent Policy Bindings and `FINANCE` protected-
+    attribute rules — ingestion routes now resolve governing policies from
+    `policy_bindings`, not `Adapter.governing_policy_ids` (removed), and
+    `EvidenceStore`'s resolution path now reads `protected_attribute_rules`,
+    not `classification.py`'s static dict. Reuses `plugins.seed_registry`'s
+    own functions rather than duplicating the seed data here.
     """
     if POSTGRES_URL is None:
         return
@@ -53,20 +60,30 @@ def _seed_plugin_registry() -> None:
     from sqlalchemy.orm import Session
 
     from gov_platform.db.repositories.plugin_registration import PluginRegistrationRepository
+    from gov_platform.db.repositories.policy_binding import PolicyBindingRepository
+    from gov_platform.db.repositories.protected_attribute_rule import (
+        ProtectedAttributeRuleRepository,
+    )
     from gov_platform.plugins.bootstrap import bootstrap_plugins
     from gov_platform.plugins.registry import known_adapter_keys, known_policy_keys
-    from gov_platform.plugins.seed_registry import seed_to_production
+    from gov_platform.plugins.seed_registry import (
+        seed_finance_protected_attribute_rules,
+        seed_first_party_policy_bindings,
+        seed_to_production,
+    )
     from gov_platform.schemas.plugin_registration import PluginType
 
     bootstrap_plugins()
     engine = create_db_engine(POSTGRES_URL)
-    repository = PluginRegistrationRepository()
+    plugin_repository = PluginRegistrationRepository()
+    policy_binding_repository = PolicyBindingRepository()
+    protected_attribute_rule_repository = ProtectedAttributeRuleRepository()
 
     with Session(engine) as session:
         for plugin_id, version in known_adapter_keys():
             seed_to_production(
                 session,
-                repository,
+                plugin_repository,
                 plugin_type=PluginType.ADAPTER,
                 plugin_id=plugin_id,
                 version=version,
@@ -74,11 +91,13 @@ def _seed_plugin_registry() -> None:
         for plugin_id, version in known_policy_keys():
             seed_to_production(
                 session,
-                repository,
+                plugin_repository,
                 plugin_type=PluginType.POLICY,
                 plugin_id=plugin_id,
                 version=version,
             )
+        seed_first_party_policy_bindings(session, policy_binding_repository)
+        seed_finance_protected_attribute_rules(session, protected_attribute_rule_repository)
         session.commit()
 
 

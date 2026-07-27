@@ -41,7 +41,6 @@ class _FakePayload(BaseModel):
 class _FakeAdapter(Adapter[_FakePayload]):
     adapter_id = "test-fake-adapter"
     version = "0.0.1"
-    governing_policy_ids = ("test-fake-policy",)
 
     def translate(self, raw_payload: _FakePayload) -> DecisionEvent:
         raise NotImplementedError
@@ -123,7 +122,7 @@ def test_register_adapter_decorator_returns_the_class_unchanged(
     registered_fake_adapter: type[_FakeAdapter],
 ) -> None:
     assert registered_fake_adapter.adapter_id == "test-fake-adapter"
-    assert registered_fake_adapter.governing_policy_ids == ("test-fake-policy",)
+    assert registered_fake_adapter.version == "0.0.1"
 
 
 def test_the_two_real_first_party_adapters_are_registered_once_bootstrapped() -> None:

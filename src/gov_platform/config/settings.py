@@ -43,6 +43,18 @@ class Settings(BaseSettings):
     # limits) remains M13 deployment-hardening scope.
     MAX_REQUEST_BODY_BYTES: int = 1_000_000
 
+    # M5: hex-encoded 32-byte Ed25519 private key seed, evidence records are
+    # signed with (see audit/signing.py). `None` (the default) means "no
+    # persistent key configured" — EvidenceStore falls back to a fresh,
+    # process-local ephemeral key, which signs and verifies fine within one
+    # process's lifetime (e.g. local dev, tests) but cannot be verified by a
+    # separate process (a restart, or `verify_chain`'s CLI) since nothing
+    # persists it. Real deployments must set this explicitly. A single
+    # static key, no rotation, no KMS/HSM — a deliberate M5 scope boundary,
+    # see docs/milestones/M5.md §13.8.
+    SIGNING_PRIVATE_KEY: str | None = None
+    SIGNING_KEY_ID: str = "default"
+
 
 @lru_cache
 def get_settings() -> Settings:

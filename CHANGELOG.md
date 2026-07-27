@@ -5,6 +5,36 @@ grouped by milestone (`ARCH-GOV-002` / `IMPL-GOV-001`), not by release date,
 since this project ships as a sequence of frozen, incremental milestones
 rather than continuous releases.
 
+## [0.6.0-m5] — 2026-07-27 — M5: Policy Bindings, Verdict Escalation & Evidence Signing
+
+Replaces the static, code-defined `Adapter.governing_policy_ids` with a
+database-backed Policy Binding, gives `GovernanceEngine` the full
+four-state `VerdictStatus` driven by per-binding severity, signs every
+evidence record, and moves protected-attribute classification rules
+off static code for `EvidenceStore`'s resolution path. Full design
+rationale, decisions, and the production-readiness review:
+[`docs/milestones/M5.md`](docs/milestones/M5.md).
+
+### Added
+- `schemas/policy_binding.py` — `PolicyBinding`, `PolicySeverity` (`LOW`/`MEDIUM`/`HIGH`), `PolicyBindingLifecycleState` (`ACTIVE`/`INACTIVE`); `db/repositories/policy_binding.py`; `api/admin/policy_bindings.py` (`create`/`list`/`get`/`activate`/`deactivate`). Migration `0011`.
+- `schemas/protected_attribute_rule.py` — `ProtectedAttributeRule`, `ProtectedAttributeRuleClassification` (`DIRECT`/`PROXY`); `db/repositories/protected_attribute_rule.py`; `api/admin/protected_attribute_rules.py` (`create`/`list`/`get`). Migration `0012`.
+- `audit/signing.py` — Ed25519 evidence-record signing/verification (`EvidenceSigner`, `load_signer`, `verify_signature`); a small CLI to derive a public key from a private key. `evidence_chain` gains nullable `signature`/`signing_key_id` columns (migration `0013`).
+- `VerdictStatus.ALLOW_WITH_FLAG`, `.ESCALATE_FOR_REVIEW`, `.RECOMMEND_HOLD` — the real four-state model. `.ALLOW`/`.FLAGGED` are kept as permanent, historical-only members for pre-M5 rows.
+- `GovernanceEngine(governing_policies: list[GoverningPolicy])` — `GoverningPolicy` bundles a `Policy` with its binding's `PolicySeverity`; aggregation is highest-flagged-severity-wins, mapped to the four-state status.
+
+### Changed
+- `Adapter.governing_policy_ids` **removed** — which policies govern an adapter is now resolved per-request from `policy_bindings` (`PolicyBindingRepository.list_active_for_adapter`), admin-managed without a redeploy. `plugins/seed_registry.py` seeds the equivalent bindings for both first-party adapters, reproducing M0–M4 behavior exactly at cutover.
+- `protected_attributes/resolver.py` — `ProtectedAttributeResolver` gains an optional `engine` constructor parameter; when given, rules come from the DB-backed `protected_attribute_rules` table instead of `classification.py`'s static dict. `EvidenceStore` now constructs it with its own `Engine`; `DirectAttributeInInputsPolicy` is unchanged, a deliberate, named divergence (see M5's design doc §13.9).
+- `EvidenceStore.append` signs every record's `record_hash` before persisting; `EvidenceRecord` gains `signature`/`signing_key_id` (both `None` for pre-M5 rows). `verify_chain`/its CLI gain an optional `--public-key` to also verify signatures.
+- `api/ingestion/routes.py`'s per-request policy resolution now queries `policy_bindings` instead of a class attribute; an adapter with zero active bindings fails with a 503.
+
+### Fixed
+_(found during this milestone's own production-readiness review, before freeze)_
+- `protected_attributes/classification.py`'s module docstring still described DB-backed rules as entirely future work after this milestone partially delivered them — updated to name the real, scoped-to-one-consumer state.
+
+### Deferred
+No schema changes were needed beyond three additive migrations (two new tables, two nullable columns) — every existing table kept its shape. Domain/jurisdiction-keyed Policy Bindings (only `adapter_id`-keyed shipped), unifying `DirectAttributeInInputsPolicy` with DB-backed rules, signing-key rotation/KMS custody, and authentication on any endpoint (including the two new M5 admin routes) all remain named, deferred gaps — see `docs/milestones/M5.md` §15/§16. Human Review Workflow (M9), Compliance Dashboard (M10), encryption at rest (M11), async ingestion (M6).
+
 ## [0.5.0-m4] — 2026-07-27 — M4: Policy Plurality & Disagreement Surfacing
 
 `GovernanceEngine` now runs more than one `Policy` against a single

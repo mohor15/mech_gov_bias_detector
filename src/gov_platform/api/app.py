@@ -27,6 +27,13 @@ One `ProtectedAttributeResolver`-equivalent concern from M2 doesn't apply
 here the same way: each generated route's handler instantiates its own
 policy per request from the registry, so there is no shared engine
 instance to construct up front at all.
+
+M5: two more repositories are constructed here (`PolicyBindingRepository`,
+`ProtectedAttributeRuleRepository`) and two more Admin API routers wired in
+— see `docs/milestones/M5.md`. Neither needs a live database at
+construction time either, for the same reason every other repository here
+doesn't: they hold no connection, only an `Engine`/`Session` passed in per
+call.
 """
 
 from __future__ import annotations
@@ -38,12 +45,17 @@ from fastapi.responses import JSONResponse
 
 from gov_platform.api import health
 from gov_platform.api.admin import plugins as admin_plugins
+from gov_platform.api.admin import policy_bindings as admin_policy_bindings
+from gov_platform.api.admin import protected_attribute_rules as admin_protected_attribute_rules
 from gov_platform.api.admin import systems as admin_systems
 from gov_platform.api.ingestion.routes import build_ingestion_router
 from gov_platform.api.middleware import MaxBodySizeMiddleware
 from gov_platform.audit.evidence_store import EvidenceStore
+from gov_platform.audit.signing import load_signer
 from gov_platform.config.settings import Settings, get_settings
 from gov_platform.db.repositories.plugin_registration import PluginRegistrationRepository
+from gov_platform.db.repositories.policy_binding import PolicyBindingRepository
+from gov_platform.db.repositories.protected_attribute_rule import ProtectedAttributeRuleRepository
 from gov_platform.db.repositories.shadow_finding import ShadowFindingRepository
 from gov_platform.db.repositories.system import SystemRepository
 from gov_platform.db.session import create_db_engine
@@ -70,18 +82,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(MaxBodySizeMiddleware, max_bytes=resolved_settings.MAX_REQUEST_BODY_BYTES)
 
     db_engine = create_db_engine(resolved_settings.DATABASE_URL)
+    signer = load_signer(
+        resolved_settings.SIGNING_PRIVATE_KEY, key_id=resolved_settings.SIGNING_KEY_ID
+    )
 
     app.state.normalization_service = NormalizationService()
     app.state.db_engine = db_engine
-    app.state.evidence_store = EvidenceStore(db_engine)
+    app.state.evidence_store = EvidenceStore(db_engine, signer=signer)
     app.state.system_repository = SystemRepository()
     app.state.plugin_registration_repository = PluginRegistrationRepository()
     app.state.shadow_finding_repository = ShadowFindingRepository()
+    app.state.policy_binding_repository = PolicyBindingRepository()
+    app.state.protected_attribute_rule_repository = ProtectedAttributeRuleRepository()
 
     app.include_router(health.router)
     app.include_router(build_ingestion_router(), prefix="/v1/ingestion")
     app.include_router(admin_systems.router, prefix="/v1/admin")
     app.include_router(admin_plugins.router, prefix="/v1/admin")
+    app.include_router(admin_policy_bindings.router, prefix="/v1/admin")
+    app.include_router(admin_protected_attribute_rules.router, prefix="/v1/admin")
 
     @app.exception_handler(PluginTimeoutError)
     async def plugin_timeout_handler(request: Request, exc: PluginTimeoutError) -> JSONResponse:

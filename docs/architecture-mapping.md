@@ -1,27 +1,75 @@
-# Architecture → Module Mapping (M4)
+# Architecture → Module Mapping (M5)
 
 Onboarding reference: which `ARCH-GOV-002` component each module implements,
 and the precise boundary as of this milestone — what's real today vs. what's
 deferred and to which milestone. Read alongside each module's own docstring,
 which is the authoritative source; this table is the map, not the territory.
 
-| Architecture component (§) | Module | Status as of M4 |
+| Architecture component (§) | Module | Status as of M5 |
 |---|---|---|
-| §4.1 Ingestion Gateway & Adapter Framework | `adapters/base.py`, `adapters/synthetic.py`, `adapters/credit_scorecard.py` | Real, generic (`Adapter[TPayload]`) port + two implementations. `CreditScorecardAdapter` is `0.2.0` as of M4 — `governing_policy_ids` widened to a tuple (below). Ingestion routes are still generated from whichever adapters are registered (`api/ingestion/routes.py`), not hand-written per adapter. |
-| §4.2 Normalization Service & Canonical Decision Event | `schemas/decision_event.py`, `normalization/service.py` | Real, minimal canonical schema; structural normalization only (whitespace, timezone, precision) — unchanged by M4. |
-| §4.3 Protected Attribute Resolution Service | `schemas/protected_attribute.py`, `protected_attributes/classification.py`, `protected_attributes/resolver.py` | Classifies each of a domain's expected protected attributes as `DIRECT`/`PROXIED`/`WITHHELD` (a concrete service, not a plugin port). Rules are static code, scoped to one domain (`FINANCE`); DB-backed, admin-configurable rules remain M5 — unchanged by M4. |
-| §6 Plugin Architecture | `adapters/base.py`, `policy_engine/base.py`, `plugins/registry.py`, `plugins/bootstrap.py`, `plugins/sandbox.py`, `schemas/plugin_registration.py`, `db/repositories/plugin_registration.py`, `api/admin/plugins.py` | In-process registry + database-backed lifecycle state + a timeout/exception-isolation sandbox around every plugin call — unchanged mechanism, exercised by M4 for a real version transition (`credit-scorecard` `0.1.0` → `0.2.0`, verified to auto-demote correctly). `Adapter`/`Policy` remain the only two ports. |
-| §7 Policy Engine | `policy_engine/base.py`, `policy_engine/policies/always_allow.py`, `policy_engine/policies/direct_attribute_in_inputs.py`, `policy_engine/policies/high_debt_ratio_gate.py` | Real port + **three** reference policies as of M4. `Policy.evaluate(event) -> Finding`'s signature remains unchanged — plurality is orchestrated by `GovernanceEngine` collecting multiple `Policy` instances, not by widening what each one receives. Population-level policies remain M6/M8. |
-| §8 Governance Engine | `governance_engine/engine.py`, `schemas/verdict.py` | **M4: real policy plurality.** `GovernanceEngine(policies: list[Policy])` runs every policy and aggregates via any-`FLAGGED`-wins; `findings` can now genuinely hold more than one entry. A `SHADOW`-state policy's Finding is still evaluated and persisted to `shadow_findings` by the ingestion route directly, per policy family, independent of how many families an adapter declares — it never reaches this class or the served Verdict. Policy Bindings, the full four-state model, escalation, and signing remain M5. |
+| §4.1 Ingestion Gateway & Adapter Framework | `adapters/base.py`, `adapters/synthetic.py`, `adapters/credit_scorecard.py` | Real, generic (`Adapter[TPayload]`) port + two implementations. `governing_policy_ids` is **removed** as of M5 — which policies govern an adapter is now a `policy_bindings` database fact (§7/§8 below), not a class attribute. Ingestion routes are still generated from whichever adapters are registered (`api/ingestion/routes.py`), not hand-written per adapter. |
+| §4.2 Normalization Service & Canonical Decision Event | `schemas/decision_event.py`, `normalization/service.py` | Real, minimal canonical schema; structural normalization only (whitespace, timezone, precision) — unchanged by M5. |
+| §4.3 Protected Attribute Resolution Service | `schemas/protected_attribute.py`, `protected_attributes/classification.py`, `protected_attributes/resolver.py`, `schemas/protected_attribute_rule.py`, `db/repositories/protected_attribute_rule.py` | **M5: DB-backed for one consumer.** `ProtectedAttributeResolver` now supports two ruleset sources, chosen once at construction: the static, in-code `classification.py` rules by default (unchanged — still what `DirectAttributeInInputsPolicy` uses), or the admin-configurable `protected_attribute_rules` table when constructed with an `Engine` (what `EvidenceStore` uses). A deliberate, named divergence between the two consumers — see M5-specific notes below. |
+| §6 Plugin Architecture | `adapters/base.py`, `policy_engine/base.py`, `plugins/registry.py`, `plugins/bootstrap.py`, `plugins/sandbox.py`, `schemas/plugin_registration.py`, `db/repositories/plugin_registration.py`, `api/admin/plugins.py` | In-process registry + database-backed lifecycle state + a timeout/exception-isolation sandbox around every plugin call — unchanged by M5. `Adapter`/`Policy` remain the only two ports; Policy Bindings (below) are a separate, orthogonal axis (*which* trusted policies apply, not *whether* a policy's code is trusted). |
+| §7 Policy Engine | `policy_engine/base.py`, `policy_engine/policies/*.py`, `schemas/policy_binding.py`, `db/repositories/policy_binding.py`, `api/admin/policy_bindings.py` | Real port + three reference policies, unchanged by M5. **New in M5**: Policy Bindings — a `policy_bindings` table, keyed by `adapter_id` (not domain/jurisdiction — see M5-specific notes), admin-managed via `api/admin/policy_bindings.py`, carrying each binding's `PolicySeverity`. `Policy.evaluate(event) -> Finding`'s signature remains unchanged. |
+| §8 Governance Engine | `governance_engine/engine.py`, `schemas/verdict.py` | **M5: real escalation.** `GovernanceEngine(governing_policies: list[GoverningPolicy])` runs every policy and aggregates via highest-flagged-severity-wins into the full four-state `VerdictStatus` (`ALLOW` / `ALLOW_WITH_FLAG` / `ESCALATE_FOR_REVIEW` / `RECOMMEND_HOLD`), replacing M0–M4's two-state placeholder. `FLAGGED` remains a permanent, historical-only enum member for pre-M5 rows. A `SHADOW`-state policy's Finding is still evaluated and persisted to `shadow_findings` independently — unaffected by escalation. |
 | §9 Monitoring | `observability/logging.py` | Structured logging only. System/governance-health metrics and dashboards are M7 — hence the separate, narrower `observability` package rather than `monitoring`. |
 | §10 Evaluation Framework | *(not yet built)* | M8. |
 | §11 Compliance Dashboard | *(not yet built)* | M10. |
-| §12 Human Review Workflow | *(not yet built)* | M9. |
-| §13 Audit System | `audit/hash_chain.py`, `audit/evidence_store.py`, `audit/verify_chain.py` | Real hash-chained Postgres ledger, append-only enforced at the database-privilege level, plus a standalone chain-verification job/CLI. Unchanged by M3 — `shadow_findings` is a deliberately separate table, never touching the evidence chain. Retention tiers and privilege classification remain M11. |
+| §12 Human Review Workflow | *(not yet built)* | M9 — an `ESCALATE_FOR_REVIEW` verdict is fully computed and persisted by M5; nothing yet queues it for a human to act on. |
+| §13 Audit System | `audit/hash_chain.py`, `audit/evidence_store.py`, `audit/verify_chain.py`, `audit/signing.py` | Real hash-chained Postgres ledger, append-only enforced at the database-privilege level, plus a standalone chain-verification job/CLI. **New in M5**: every evidence record is signed (Ed25519, single static key — see M5-specific notes) at write time; `verify_chain`/its CLI optionally verify signatures too, given a public key. `shadow_findings` remains a deliberately separate table, never touching the evidence chain. Key rotation/KMS custody and retention tiers remain unassigned/M11. |
 | §14 Reporting | *(not yet built)* | M12. |
-| §15 APIs | `api/health.py`, `api/ingestion/routes.py`, `api/admin/systems.py`, `api/admin/plugins.py`, `api/app.py`, `api/asgi.py` | Ingestion routes are registry-generated (one per registered adapter — currently `synthetic` and `credit-scorecard`, same URL scheme as M2 but no longer hand-written). **New in M3**: the Plugin Registry Admin API (`register`/`list`/`get`/`promote`), alongside System registration (M1). Advisory, Config (beyond System/Plugins), Query/Reporting, and Webhook APIs arrive with the milestones that give them something to expose. `app.py` is the side-effect-free factory; `asgi.py` is the only module that actually constructs the default instance. |
-| §16 Database Design | `db/session.py`, `db/models.py`, `db/migrate.py`, `db/repositories/`, `schemas/system.py`, `schemas/model_version.py`, `schemas/protected_attribute.py`, `schemas/plugin_registration.py` | Real Postgres, formalized via numbered `.sql` migrations (schema authority) + a repository layer per entity, now including **`PluginRegistration` and shadow-Finding persistence, new in M3** (migration `0010`). SQLAlchemy models are query-time mappings only — never used to generate DDL, so there is exactly one source of schema truth. Multi-tenancy and the analytical-warehouse split remain later milestones. |
+| §15 APIs | `api/health.py`, `api/ingestion/routes.py`, `api/admin/systems.py`, `api/admin/plugins.py`, `api/admin/policy_bindings.py`, `api/admin/protected_attribute_rules.py`, `api/app.py`, `api/asgi.py` | Ingestion routes are registry-generated (one per registered adapter — currently `synthetic` and `credit-scorecard`). **New in M5**: the Policy Bindings Admin API (`create`/`list`/`get`/`activate`/`deactivate`) and the Protected Attribute Rules Admin API (`create`/`list`/`get`, no lifecycle). Neither loads new code — both manage facts about already-deployed `Adapter`/`Policy` implementations. No endpoint anywhere has authentication yet, including these two — a deliberate, explicitly-named M5 non-goal (see M5-specific notes). `app.py` is the side-effect-free factory; `asgi.py` is the only module that actually constructs the default instance. |
+| §16 Database Design | `db/session.py`, `db/models.py`, `db/migrate.py`, `db/repositories/`, `schemas/system.py`, `schemas/model_version.py`, `schemas/protected_attribute.py`, `schemas/plugin_registration.py`, `schemas/policy_binding.py`, `schemas/protected_attribute_rule.py` | Real Postgres, formalized via numbered `.sql` migrations (schema authority) + a repository layer per entity. **New in M5**: `policy_bindings` and `protected_attribute_rules` tables (migrations `0011`/`0012`), plus nullable `signature`/`signing_key_id` columns on `evidence_chain` (migration `0013`). SQLAlchemy models are query-time mappings only — never used to generate DDL. Multi-tenancy and the analytical-warehouse split remain later milestones. |
 | §17 Deployment Architecture | `infra/docker/` | Single container, single service; assumes an external Postgres. Multi-plane topology, multi-tenancy, and mTLS are M13. |
+
+## M5-specific notes
+
+- **Policy Bindings are keyed by `adapter_id`, not `System.domain`/
+  jurisdiction — a deliberately narrower reading of "Policy Bindings" than
+  the architecture's literal phrase.** The richer, domain/jurisdiction-keyed
+  design would require resolving a `DecisionEvent`'s `System.domain`
+  *before* `GovernanceEngine` can be constructed, a real ingestion-pipeline
+  reorder — deferred until a second real domain exists to design it
+  against (`FINANCE` is still the only one). See
+  `docs/milestones/M5.md` §13.1 for the full reasoning; this is the single
+  highest-stakes call M5 made.
+- **Severity lives on `PolicyBinding`, not on `Policy`.** How serious a
+  violation is *in the context of a specific adapter* is an administrative
+  judgment, not a property of what the policy's code checks — the same
+  separation of concerns that already moved `governing_policy_ids` off
+  `Adapter` and into the database. `FindingOutcome` stays binary
+  `CLEAR`/`FLAGGED`; escalation tier is derived from severity, never stored
+  on `Finding`.
+- **DB-backed protected-attribute rules apply to `EvidenceStore`'s
+  resolution path only — `DirectAttributeInInputsPolicy` deliberately keeps
+  reading the static, in-code ruleset.** Unifying both consumers would
+  require giving a `Policy` — constructed with zero arguments everywhere in
+  this codebase — real database access, a `Policy` port change M5
+  intentionally does not make on top of everything else it already
+  changes. A named, temporary divergence: an admin editing
+  `protected_attribute_rules` changes what gets *persisted* as resolved,
+  not what `DirectAttributeInInputsPolicy` *judges* as a leak, until a
+  later milestone unifies the two. See `docs/milestones/M5.md` §13.9.
+- **Evidence signing is a single static Ed25519 keypair, no KMS/HSM, no
+  rotation.** `signing_key_id` travels with every signed record so a
+  future rotation milestone can tell which key verifies which record
+  without guessing. Real key custody is real infrastructure scope this
+  platform has no second deployment environment to design correctly
+  against yet — named explicitly, not silently deferred.
+- **`VerdictStatus.ALLOW`/`FLAGGED` are permanent, historical-only enum
+  members — no data migration of M0–M4 verdicts.** A `Verdict`'s `status`
+  is embedded in the hash-chained, immutable `evidence_chain.payload`;
+  rewriting the separate, mutable `verdicts.status` column for historical
+  rows would make the queryable view disagree with the evidence-of-record
+  for the same event. No M5+ code path ever constructs a new
+  `GovernanceVerdict` with either legacy value.
+- **No authentication was added anywhere, including the two new M5 admin
+  endpoints** — consistent with every existing admin endpoint, but flagged
+  because Policy Bindings materially raise the stakes of that gap: an
+  unauthenticated deactivate call can now silently stop a policy from
+  governing real financial decisions. Named loudly in the M5
+  production-readiness review, not solved piecemeal here.
 
 ## M4-specific notes
 

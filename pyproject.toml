@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gov-platform"
-version = "0.5.0"
-description = "Domain-agnostic AI Governance Platform (V2) — M4: policy plurality and disagreement surfacing."
+version = "0.6.0"
+description = "Domain-agnostic AI Governance Platform (V2) — M5: Policy Bindings, verdict escalation, and evidence signing."
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [
@@ -15,6 +15,7 @@ dependencies = [
     "pydantic-settings>=2.3",
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +35,16 @@ where = ["src"]
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
+# legacy_v1/ is the M0-archived, superseded V1 prototype -- preserved
+# unmodified for reference (see README.md), never imported by gov_platform,
+# never run, and not part of this project's quality gates. CI's lint step
+# already scopes explicitly to `ruff check src tests`, but a bare
+# `ruff check .` (a pre-commit --all-files run, an editor integration, a
+# developer typing the obvious command) has no reason to know that implicit
+# convention and will otherwise flag legacy_v1's pre-V2 code style. Excluding
+# it here is the single point of truth every invocation reads from, instead
+# of every caller needing to remember to pass `src tests` explicitly.
+exclude = ["legacy_v1"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "N"]

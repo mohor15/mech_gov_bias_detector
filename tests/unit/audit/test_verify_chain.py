@@ -10,12 +10,20 @@ from datetime import UTC, datetime
 
 from gov_platform.audit.evidence_store import EvidenceRecord
 from gov_platform.audit.hash_chain import GENESIS_HASH, canonical_json, compute_hash
+from gov_platform.audit.signing import load_signer
 from gov_platform.audit.verify_chain import verify_chain
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
 
-def _record(sequence_number: int, payload: dict[str, object], previous_hash: str) -> EvidenceRecord:
+def _record(
+    sequence_number: int,
+    payload: dict[str, object],
+    previous_hash: str,
+    *,
+    signature: str | None = None,
+    signing_key_id: str | None = None,
+) -> EvidenceRecord:
     payload_json = canonical_json(payload)
     return EvidenceRecord(
         sequence_number=sequence_number,
@@ -25,6 +33,8 @@ def _record(sequence_number: int, payload: dict[str, object], previous_hash: str
         previous_hash=previous_hash,
         record_hash=compute_hash(previous_hash, payload_json),
         recorded_at=_NOW,
+        signature=signature,
+        signing_key_id=signing_key_id,
     )
 
 
@@ -91,3 +101,56 @@ def test_first_record_must_chain_from_genesis() -> None:
 
     assert result.valid is False
     assert result.first_corruption_at == 1
+
+
+# --- M5: signature verification -----------------------------------------
+
+
+def test_a_valid_signature_passes_when_a_public_key_is_given() -> None:
+    signer = load_signer(None)
+    previous_hash = GENESIS_HASH
+    record = _record(1, {"n": 1}, previous_hash)
+    signed = record.model_copy(
+        update={"signature": signer.sign(record.record_hash), "signing_key_id": signer.key_id}
+    )
+
+    result = verify_chain([signed], public_key_hex=signer.public_key_hex())
+
+    assert result.valid is True
+
+
+def test_a_signature_from_the_wrong_key_fails_verification() -> None:
+    signer = load_signer(None)
+    other_signer = load_signer(None)
+    record = _record(1, {"n": 1}, GENESIS_HASH)
+    signed = record.model_copy(update={"signature": signer.sign(record.record_hash)})
+
+    result = verify_chain([signed], public_key_hex=other_signer.public_key_hex())
+
+    assert result.valid is False
+    assert result.first_corruption_at == 1
+    assert "signature" in result.detail
+
+
+def test_records_with_no_signature_are_skipped_not_failed() -> None:
+    # Pre-M5 historical records -- signing applies going forward only, see
+    # schemas/verdict.py's docstring.
+    signer = load_signer(None)
+    record = _record(1, {"n": 1}, GENESIS_HASH)  # no signature set
+
+    result = verify_chain([record], public_key_hex=signer.public_key_hex())
+
+    assert result.valid is True
+
+
+def test_no_public_key_given_skips_signature_checks_entirely() -> None:
+    other_signer = load_signer(None)
+    record = _record(1, {"n": 1}, GENESIS_HASH)
+    # Deliberately signed with a *different* key than would ever be
+    # checked -- proves omitting public_key_hex genuinely skips the check
+    # rather than happening to pass.
+    signed = record.model_copy(update={"signature": other_signer.sign(record.record_hash)})
+
+    result = verify_chain([signed])
+
+    assert result.valid is True

@@ -1,24 +1,27 @@
-# AI Governance Platform — M3: Plugin Registry, Lifecycle & Sandboxing
+# AI Governance Platform — M5: Policy Bindings, Verdict Escalation & Evidence Signing
 
 A domain-agnostic observation-and-evaluation layer for LLM copilots, classical
 ML models, rule engines, and hybrid decision systems. This repository
 implements the frozen V2 architecture (`ARCH-GOV-002`) incrementally, per the
 frozen implementation plan (`IMPL-GOV-001`).
 
-**Current milestone: M3.** Replaces M2's two hand-wired adapter/policy pairs
-with a real plugin registry: adapters and policies are registered with a
-`draft`/`shadow`/`production` lifecycle, ingestion routes are generated from
-whatever is registered (not hand-written per adapter), and every plugin call
-runs under a timeout + exception-isolating sandbox. See
+**Current milestone: M5.** Replaces the static, code-defined
+`Adapter.governing_policy_ids` with a database-backed Policy Binding
+(admin-managed, no redeploy needed), gives `GovernanceEngine` the real
+four-state verdict model (`ALLOW` / `ALLOW_WITH_FLAG` / `ESCALATE_FOR_REVIEW`
+/ `RECOMMEND_HOLD`) driven by each binding's severity, signs every evidence
+record (Ed25519), and moves protected-attribute classification rules off
+static code for `EvidenceStore`'s resolution path. See
 [`docs/architecture-mapping.md`](docs/architecture-mapping.md) for exactly
 what each module does and does not yet do, and
-[`docs/milestones/M3.md`](docs/milestones/M3.md) for the full milestone
+[`docs/milestones/M5.md`](docs/milestones/M5.md) for the full milestone
 report.
 
 > **Do not point this milestone at real applicant/subject data.** The
 > Evidence Store (and `protected_attribute_resolutions`) has no encryption
 > at rest and no retention controls yet (M11), and there is still no auth in
-> front of any endpoint (M5+/M13). Synthetic data only.
+> front of any endpoint — including the M5 admin surface below — a
+> platform-wide gap no milestone has closed yet (M13). Synthetic data only.
 
 Version 1 (a single-domain prototype, superseded by this design) is preserved,
 unmodified, in [`legacy_v1/`](legacy_v1/) for reference.
@@ -55,19 +58,29 @@ secret-managed password:
 export GOV_PLATFORM_DATABASE_URL="postgresql+psycopg://gov_platform_app:<password>@localhost:5432/gov_platform"
 ```
 
-**New in M3, and required before ingestion will accept anything**: seed the
-plugin registry. Ingestion routes are generated from whichever adapters
-this process's code has registered (`plugins/bootstrap.py`), but each one
-rejects real traffic until its lifecycle state reaches `PRODUCTION` — a
-fresh database has no plugin registrations at all yet, the same way it has
-no migrations applied until you run them:
+**Required before ingestion will accept anything**: seed the plugin
+registry. Ingestion routes are generated from whichever adapters this
+process's code has registered (`plugins/bootstrap.py`), but each one
+rejects real traffic until its lifecycle state reaches `PRODUCTION` *and*
+it has at least one active Policy Binding — a fresh database has none of
+that yet, the same way it has no migrations applied until you run them:
 
 ```bash
 python -m gov_platform.plugins.seed_registry --database-url "$GOV_PLATFORM_DATABASE_URL"
+# ADAPTER credit-scorecard 0.2.0: promoted to PRODUCTION
 # ADAPTER synthetic 0.1.0: promoted to PRODUCTION
-# ADAPTER credit-scorecard 0.1.0: promoted to PRODUCTION
 # POLICY always-allow 0.1.0: promoted to PRODUCTION
 # POLICY direct-attribute-in-inputs 0.1.0: promoted to PRODUCTION
+# POLICY high-debt-ratio-gate 0.1.0: promoted to PRODUCTION
+# BINDING credit-scorecard -> direct-attribute-in-inputs: created (severity=HIGH)
+# BINDING credit-scorecard -> high-debt-ratio-gate: created (severity=MEDIUM)
+# BINDING synthetic -> always-allow: created (severity=LOW)
+# RULE FINANCE age: created (DIRECT)
+# RULE FINANCE gender: created (DIRECT)
+# RULE FINANCE marital_status: created (DIRECT)
+# RULE FINANCE race: created (DIRECT)
+# RULE FINANCE first_name: created (PROXY)
+# RULE FINANCE zip_code: created (PROXY)
 ```
 
 Now start the app:
@@ -131,7 +144,11 @@ curl -X POST http://127.0.0.1:8000/v1/ingestion/events/credit-scorecard \
         "reason_codes": ["R01"]
       }'
 # status: "ALLOW" -- protected attributes stayed out of feature_vector.
-# Move "race" into feature_vector instead and this becomes "FLAGGED".
+# Move "race" into feature_vector instead and this becomes "RECOMMEND_HOLD"
+# (direct-attribute-in-inputs is bound at HIGH severity). Raise
+# debt_to_income above 0.43 instead and it becomes "ESCALATE_FOR_REVIEW"
+# (high-debt-ratio-gate is bound at MEDIUM severity) -- two independent
+# policies, two different escalation outcomes for the same adapter.
 ```
 
 **Managing the plugin registry** — list what's registered, or promote a
@@ -143,10 +160,46 @@ curl http://127.0.0.1:8000/v1/admin/plugins
 curl -X POST http://127.0.0.1:8000/v1/admin/plugins/<registration-id>/promote
 ```
 
-Verify the evidence hash chain independently at any time:
+**Managing Policy Bindings** — which policy families govern which adapter,
+and how severe a flag from each one is (drives the escalation outcome
+above). Changing a binding takes effect on the very next ingestion
+request, no restart needed:
+
+```bash
+curl http://127.0.0.1:8000/v1/admin/policy-bindings
+
+curl -X POST http://127.0.0.1:8000/v1/admin/policy-bindings \
+  -H "Content-Type: application/json" \
+  -d '{"adapter_id": "credit-scorecard", "policy_id": "high-debt-ratio-gate", "severity": "HIGH"}'
+# 409 -- already bound at MEDIUM by the seed step above; deactivate first
+# to rebind, or use a policy_id not already bound to this adapter.
+
+curl -X POST http://127.0.0.1:8000/v1/admin/policy-bindings/<binding-id>/deactivate
+curl -X POST http://127.0.0.1:8000/v1/admin/policy-bindings/<binding-id>/activate
+```
+
+**Managing protected-attribute classification rules** — the DB-backed
+ruleset `EvidenceStore`'s resolution path consults (not what
+`DirectAttributeInInputsPolicy` itself checks — see
+[`docs/milestones/M5.md`](docs/milestones/M5.md) §13.9 for that deliberate
+divergence):
+
+```bash
+curl http://127.0.0.1:8000/v1/admin/protected-attribute-rules
+
+curl -X POST http://127.0.0.1:8000/v1/admin/protected-attribute-rules \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "HEALTHCARE", "attribute_name": "diagnosis", "classification": "DIRECT"}'
+```
+
+Verify the evidence hash chain independently at any time — optionally also
+verifying every record's signature against a public key
+(`python -m gov_platform.audit.signing --private-key <hex>` derives one
+from `GOV_PLATFORM_SIGNING_PRIVATE_KEY`):
 
 ```bash
 python -m gov_platform.audit.verify_chain --database-url "$GOV_PLATFORM_DATABASE_URL"
+python -m gov_platform.audit.verify_chain --database-url "$GOV_PLATFORM_DATABASE_URL" --public-key <hex>
 ```
 
 ## Run with Docker
@@ -207,16 +260,21 @@ src/gov_platform/
   config/              Settings (env-driven)
   observability/       Structured (JSON) logging
   schemas/             Canonical DecisionEvent, Finding, GovernanceVerdict, System, ModelVersion,
-                       ResolvedProtectedAttribute, PluginRegistration
-  adapters/            Adapter[TPayload] port (+ adapter_id/version/governing_policy_id identity)
+                       ResolvedProtectedAttribute, PluginRegistration, PolicyBinding,
+                       ProtectedAttributeRule
+  adapters/            Adapter[TPayload] port (+ adapter_id/version identity)
                        + SyntheticAdapter, CreditScorecardAdapter
   normalization/       Structural normalization pass
-  protected_attributes/ classification.py (static rules) + resolver.py (ProtectedAttributeResolver)
-  policy_engine/       Policy port + AlwaysAllowPolicy, DirectAttributeInInputsPolicy
-  governance_engine/   Wraps a Policy's Finding into a Verdict
+  protected_attributes/ classification.py (static rules) + resolver.py (ProtectedAttributeResolver;
+                       optionally DB-backed via protected_attribute_rules -- see its docstring)
+  policy_engine/       Policy port + AlwaysAllowPolicy, DirectAttributeInInputsPolicy,
+                       HighDebtRatioGatePolicy
+  governance_engine/   Aggregates every governing Policy's Finding into one Verdict, severity-driven
+                       (GoverningPolicy bundles a Policy with its binding's PolicySeverity)
   plugins/             registry.py (in-process catalog), bootstrap.py (first-party imports),
                        sandbox.py (timeout + exception isolation), seed_registry.py (CLI)
-  audit/               hash_chain.py (pure), evidence_store.py (Postgres), verify_chain.py
+  audit/               hash_chain.py (pure), evidence_store.py (Postgres), verify_chain.py,
+                       signing.py (Ed25519 evidence signing)
   db/                  session.py, migrate.py, models.py, repositories/
   api/
     app.py             Composition root -- builds routes from the plugin registry
@@ -225,7 +283,9 @@ src/gov_platform/
     middleware.py      MaxBodySizeMiddleware
     health.py          GET /healthz
     ingestion/         Registry-generated: one route per registered adapter
-    admin/             POST/GET /v1/admin/systems, POST/GET/promote /v1/admin/plugins
+    admin/             systems, plugins (register/list/get/promote), policy-bindings
+                       (create/list/get/activate/deactivate), protected-attribute-rules
+                       (create/list/get)
 infra/
   docker/              Dockerfile, docker-compose.yml
   migrations/          Numbered, Postgres-targeting .sql files
@@ -235,24 +295,29 @@ tests/integration/     Full HTTP/DB round-trip tests; most need @requires_postgr
 legacy_v1/             Superseded V1 prototype (reference only, not run)
 ```
 
-## What M3 deliberately does not include
+## What M5 deliberately does not include
 
 Every module has a docstring stating precisely which milestone owns the
-capability it doesn't yet have. The short version: policy plurality (M4),
-the full four-state verdict model with bindings/escalation/signing (M5),
-async ingestion and population-level policies (M6), DB-backed/admin-
-configurable protected-attribute classification rules (M5), real OS-level
-plugin isolation beyond the timeout/exception sandbox (no milestone named
-yet — see `docs/milestones/M3.md` §13.1), encryption at rest and retention
-(M11), and comprehensive request-abuse protection beyond the `Content-Length`
-check added during M0's finalization (M13). Building any of that now would
-violate the milestone's own scope.
+capability it doesn't yet have. The short version: domain/jurisdiction-keyed
+Policy Bindings (only `adapter_id`-keyed shipped — no second real domain
+exists yet to design the richer key against), unifying
+`DirectAttributeInInputsPolicy` with the DB-backed protected-attribute
+rules (it deliberately still reads the static, in-code ruleset), signing-key
+rotation and KMS/HSM custody (a single static key, no more), the Human
+Review Workflow that actually consumes an `ESCALATE_FOR_REVIEW` verdict
+(M9), the Compliance Dashboard (M10), async ingestion and population-level
+policies (M6), real OS-level plugin isolation beyond the timeout/exception
+sandbox (no milestone named yet — see `docs/milestones/M3.md` §13.1),
+encryption at rest and retention (M11), authentication in front of any
+endpoint including the two new M5 admin routes (no milestone has closed
+this yet — M13), and comprehensive request-abuse protection beyond the
+`Content-Length` check added during M0's finalization (M13). Building any
+of that now would violate the milestone's own scope.
 
-## What remains for M4
+## What remains after M5
 
-See [`docs/milestones/M3.md`](docs/milestones/M3.md) for the full
-production-readiness review and design record. In short: M4 is policy
-plurality — multiple policies whose Findings all genuinely contribute to
-one Verdict, with disagreement aggregated and surfaced, not the
-never-affects-the-Verdict side channel M3's shadow execution deliberately
-is.
+See [`docs/milestones/M5.md`](docs/milestones/M5.md) for the full
+production-readiness review and design record, including every deferred
+item's reasoning. In short: M6 is async ingestion and population-level
+policies; M9 is the Human Review Workflow that finally gives an
+`ESCALATE_FOR_REVIEW` verdict somewhere to go.

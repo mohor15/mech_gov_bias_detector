@@ -46,8 +46,16 @@ def test_verdict_requires_at_least_one_finding() -> None:
         )
 
 
-def test_verdict_status_has_exactly_two_values() -> None:
-    # Documents the M0 decision explicitly: the full four-state model
-    # (architecture §8.2) is M5 scope. This test should fail loudly the day
-    # someone adds ESCALATE_FOR_REVIEW/RECOMMEND_HOLD outside that milestone.
-    assert {member.value for member in VerdictStatus} == {"ALLOW", "FLAGGED"}
+def test_verdict_status_has_the_full_five_value_set() -> None:
+    # M5: the real four-state model (architecture §8.2) plus FLAGGED, kept
+    # permanently as a historical-only value for pre-M5 rows -- see
+    # schemas/verdict.py's docstring. This test should fail loudly the day
+    # someone adds a sixth state or removes FLAGGED outside a milestone
+    # that has actually reasoned about historical-data compatibility.
+    assert {member.value for member in VerdictStatus} == {
+        "ALLOW",
+        "ALLOW_WITH_FLAG",
+        "ESCALATE_FOR_REVIEW",
+        "RECOMMEND_HOLD",
+        "FLAGGED",
+    }
