@@ -75,7 +75,16 @@ minversion = "8.0"
 # still report coverage, just without an enforced gate.
 addopts = "-ra --strict-markers --cov=gov_platform --cov-report=term-missing"
 testpaths = ["tests"]
-pythonpath = ["src"]
+# "." (repo root) is required, not just "src": several integration tests do
+# `from tests.conftest import requires_postgres`, an absolute import of the
+# tests package itself. `python -m pytest` masks this by adding cwd to
+# sys.path automatically, but the bare `pytest` console script CI invokes
+# does not, so collection fails with "No module named 'tests'" there even
+# though a local `python -m pytest` run passes. This is pytest's own
+# documented mechanism for adding a directory to sys.path for the test
+# session (replacing the old pytest-pythonpath plugin / conftest.py
+# sys.path hacks) — not a PYTHONPATH environment-variable workaround.
+pythonpath = ["src", "."]
 
 [tool.coverage.run]
 source = ["src/gov_platform"]
