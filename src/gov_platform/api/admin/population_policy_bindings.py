@@ -109,9 +109,7 @@ def create_population_policy_binding(
     return PopulationPolicyBindingResponse(**binding.model_dump())
 
 
-@router.get(
-    "/population-policy-bindings", response_model=list[PopulationPolicyBindingResponse]
-)
+@router.get("/population-policy-bindings", response_model=list[PopulationPolicyBindingResponse])
 def list_population_policy_bindings(
     engine: Engine = Depends(get_db_engine),
     population_policy_binding_repository: PopulationPolicyBindingRepository = Depends(

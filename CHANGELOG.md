@@ -5,6 +5,39 @@ grouped by milestone (`ARCH-GOV-002` / `IMPL-GOV-001`), not by release date,
 since this project ships as a sequence of frozen, incremental milestones
 rather than continuous releases.
 
+## [0.8.0-m7] — 2026-07-28 — M7: Monitoring — Governance & System Health
+
+Delivers architecture §9 ("Monitoring"): a real readiness check
+(`GET /readyz`, additive alongside the unchanged `/healthz`) and a single,
+DB-query-backed metrics endpoint (`GET /v1/admin/metrics`) exposing
+system-health (current-state) and governance-health (time-windowed)
+signal over data every prior milestone already produces — no new
+persisted domain state, no dashboard/UI, no metrics-store technology.
+Full design rationale, the seventeen design decisions (fourteen original
+plus three found during the design-phase hostile-review pass), and the
+post-implementation production-readiness review:
+[`docs/milestones/M7.md`](docs/milestones/M7.md).
+
+### Added
+- `api/readiness.py` — `GET /readyz`: a read-only database-connectivity check (reads one row from `systems`, not a bare `SELECT 1` — see Fixed below), `503` if unreachable. `/healthz` is unchanged.
+- `observability/metrics.py` — `check_db_reachable`, `get_system_health_metrics`, `get_governance_health_metrics`, `get_metrics`; `SystemHealthMetrics` (DB reachability/latency, `evidence_chain`'s latest sequence number, plugin lifecycle counts, per-binding population-policy-run staleness), `GovernanceHealthMetrics` (verdict counts by status, finding counts by policy, population finding counts by policy, shadow/production disagreement rate — all scoped to `[since, now())`), `MetricsResponse`.
+- `api/admin/metrics.py` — `GET /v1/admin/metrics?since=<ISO 8601>`, defaulting to the last 24 hours; a naive (non-timezone-aware) `since` is a `422`, the same discipline `schemas/decision_event.py`'s own validator already applies to persisted timestamps.
+- Migrations `0017`–`0019` — indexes on `verdicts(created_at, status)`, `findings(evaluated_at, policy_id, outcome)`, `population_findings(population_policy_id, system_id, evaluated_at)`, supporting the new windowed-aggregate access pattern. No existing table altered.
+
+### Changed
+- `db/session.create_db_engine` — a bounded `connect_timeout` (found necessary while implementing the readiness check: an unreachable host can otherwise hang for the OS's full TCP-retransmission timeout, well over a minute, observed directly). Applies to every consumer of the shared engine — a strict improvement, not a narrowly-scoped fix.
+- `pyproject.toml` — `[tool.ruff.lint.flake8-bugbear] extend-immutable-calls` now also lists `fastapi.Query` (alongside the existing `fastapi.Depends`), fixing a `ruff` false positive on `Query(default=None)` for a `datetime`-typed query parameter (the identical, already-passing call shape for a `str`-typed one is unaffected either way).
+- `api/health.py`, `observability/__init__.py` — docstrings updated to name the real, now-delivered readiness check and metrics module, replacing the "future M7 work" framing both carried since M0/M6.
+
+### Fixed
+_(found during this milestone's own implementation and post-implementation hostile-review passes, before freeze)_
+- Migration files applied via `db.migrate` are run through SQLAlchemy's `text()`, which parses a colon directly followed by a word as a bind parameter *even inside a SQL comment* — the first drafts of migrations `0017`–`0019` used phrasing like "since :since" in their own descriptive comments and failed to apply at all. Fixed by rewording; a warning is now left in migration `0017` for future migration authors.
+- `check_db_reachable`'s first implementation ran a bare `SELECT 1`, which proves connectivity and authentication but nothing about whether the `gov_platform_app` role's actual table-level grants are intact — a role that could log in but had every grant revoked would still report "reachable." Fixed to read one row from `systems` instead.
+- An unreachable database (a dropped route, not a fast "connection refused") could leave `/readyz` hanging past a minute before this milestone's `connect_timeout` fix — verified directly by connecting to a genuinely unreachable host during implementation, not assumed.
+
+### Deferred
+No schema changes beyond three additive indexes — every existing table kept its exact shape. A general, pluggable Evaluation Framework (M8; M7 exposes counts of judgments already computed, not new ones); a dashboard/UI (M10's Compliance Dashboard, not built here — see `docs/milestones/M7.md` §13.2); real metrics infrastructure (Prometheus/OpenTelemetry — no established scraping infrastructure exists to integrate with yet); caching/materialization of metrics (on-demand only this milestone); a sandbox-timeout counter (reversed out of scope entirely — a process-local metric would silently break under horizontal scaling, the one property every other metric in this design correctly avoids by being DB-backed); authentication on any endpoint, including the two new ones (still `M5+/M13`, now a four-milestone-and-counting gap). Human Review Workflow (M9), Compliance Dashboard (M10), encryption at rest (M11), Reporting (M12).
+
 ## [0.7.0-m6] — 2026-07-28 — M6: Async Population-Policy Evaluation Plane & Adverse Impact Ratio
 
 Delivers the async evaluation plane population-level policies need — a

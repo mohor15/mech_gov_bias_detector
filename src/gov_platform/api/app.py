@@ -41,6 +41,14 @@ pattern. `population_engine/run_policies.py`'s batch job is not wired
 here at all — it is never invoked by this app, only ever run as a
 separate CLI process against the same database (see that module's
 docstring and `docs/milestones/M6.md` §4.1/§13.4).
+
+M7: `api/readiness.py` (`GET /readyz`) and `api/admin/metrics.py`
+(`GET /v1/admin/metrics`) are wired in — no new repository, no new
+construction-time DB dependency; both read the shared `db_engine` this
+function already builds. Neither endpoint's own module needs its own
+`app.state` entry (unlike every repository above): `observability/metrics.py`'s
+query functions take an `Engine` directly, the same way
+`population_engine/window.py`'s do.
 """
 
 from __future__ import annotations
@@ -50,7 +58,8 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from gov_platform.api import health
+from gov_platform.api import health, readiness
+from gov_platform.api.admin import metrics as admin_metrics
 from gov_platform.api.admin import plugins as admin_plugins
 from gov_platform.api.admin import policy_bindings as admin_policy_bindings
 from gov_platform.api.admin import population_findings as admin_population_findings
@@ -111,6 +120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.population_finding_repository = PopulationFindingRepository()
 
     app.include_router(health.router)
+    app.include_router(readiness.router)
     app.include_router(build_ingestion_router(), prefix="/v1/ingestion")
     app.include_router(admin_systems.router, prefix="/v1/admin")
     app.include_router(admin_plugins.router, prefix="/v1/admin")
@@ -118,6 +128,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_protected_attribute_rules.router, prefix="/v1/admin")
     app.include_router(admin_population_policy_bindings.router, prefix="/v1/admin")
     app.include_router(admin_population_findings.router, prefix="/v1/admin")
+    app.include_router(admin_metrics.router, prefix="/v1/admin")
 
     @app.exception_handler(PluginTimeoutError)
     async def plugin_timeout_handler(request: Request, exc: PluginTimeoutError) -> JSONResponse:

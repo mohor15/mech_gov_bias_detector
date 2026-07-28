@@ -1,12 +1,14 @@
 """Liveness endpoint.
 
-Deliberately minimal in M0: returns process liveness only. A readiness check
-that verifies Evidence Store writability and (once they exist) adapter/source
-reachability is explicitly called out as a gap to close in later milestones
-(architecture §9) — reporting "healthy" without checking dependencies was a
-known V1 weakness, not something to quietly repeat here, so this endpoint
-is named and scoped narrowly rather than overclaiming readiness it can't
-verify yet.
+Deliberately minimal since M0: returns process liveness only, unchanged by
+M7. The readiness check this docstring used to name as a future gap
+(architecture §9) is now real — see `api/readiness.py`'s `GET /readyz`,
+additive alongside this endpoint, not a redefinition of it. `/readyz`
+checks database reachability only; "adapter/source reachability" (the
+other half of the original architecture §9 citation) is currently
+vacuous — neither first-party `Adapter` has a real external dependency to
+check yet — see `api/readiness.py`'s own docstring and
+`docs/milestones/M7.md` §4.1.
 """
 
 from __future__ import annotations

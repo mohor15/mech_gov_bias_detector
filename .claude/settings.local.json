@@ -55,7 +55,28 @@
       "Bash(python -m build --wheel --no-isolation -o /tmp/m6_wheel_check .)",
       "Bash(python -c \"import setuptools, wheel; print\\('setuptools', setuptools.__version__\\); print\\('wheel', wheel.__version__\\)\")",
       "Bash(python setup.py --version)",
-      "Bash(cd *)"
+      "Bash(cd *)",
+      "Bash(ruff format *)",
+      "Bash(python -m pytest -q)",
+      "Bash(mypy src/gov_platform/observability/metrics.py)",
+      "Bash(cat)",
+      "Bash(cp /tmp/b008test2.py ./b008_scratch_test.py)",
+      "Bash(mypy src/gov_platform/db/session.py)",
+      "Bash(python -m pytest tests/unit/observability/test_metrics.py tests/unit/api/admin/test_metrics.py -q)",
+      "Bash(python -m pytest tests/unit/api/admin/test_metrics.py -q)",
+      "Bash(python -m pytest tests/unit/observability/test_metrics.py tests/unit/api/admin/test_metrics.py -q --no-cov)",
+      "Bash(python -m pytest tests/unit/observability/test_metrics.py tests/unit/api/admin/test_admin_metrics.py -q --no-cov)",
+      "Bash(python -m pytest tests/integration/test_metrics_postgres.py -q --no-cov)",
+      "Bash(python -m pytest tests/integration/test_readyz_postgres.py -q --no-cov)",
+      "Bash(python -m pytest tests/integration/test_admin_metrics_api.py -q --no-cov)",
+      "Bash(nohup python -m uvicorn gov_platform.api.asgi:app --host 127.0.0.1 --port 8020)",
+      "Bash(curl -sf http://127.0.0.1:8020/healthz)",
+      "Bash(curl -sf http://127.0.0.1:8020/readyz)",
+      "Bash(curl -sf -X POST http://127.0.0.1:8020/v1/ingestion/events/synthetic -H 'Content-Type: application/json' -d '{ *)",
+      "Bash(curl -sf http://127.0.0.1:8020/v1/admin/metrics)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" \"http://127.0.0.1:8020/v1/admin/metrics?since=2026-01-01T00:00:00\")",
+      "Bash(taskkill *)",
+      "Bash(grep -n \"^# M7\\\\|^## What Was Built\\\\|^## Production-Readiness\\\\|^## Test Statistics\\\\|^## Verdict\\\\|^---$\\\\|^## Design Review\" docs/milestones/M7.md)"
     ]
   }
 }

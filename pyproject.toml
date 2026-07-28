@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gov-platform"
-version = "0.7.0"
-description = "Domain-agnostic AI Governance Platform (V2) — M6: async population-policy evaluation plane and adverse impact ratio."
+version = "0.8.0"
+description = "Domain-agnostic AI Governance Platform (V2) — M7: monitoring, governance/system-health metrics, and a real readiness check."
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [
@@ -58,7 +58,14 @@ known-first-party = ["gov_platform", "tests"]
 # the idiomatic, documented usage, not the mutable-default-argument bug B008
 # exists to catch. Marking `Depends` immutable tells ruff to allow it instead
 # of scattering `# noqa: B008` across every route signature.
-extend-immutable-calls = ["fastapi.Depends"]
+#
+# `fastapi.Query` added at M7: ruff's B008 already silently exempts
+# `Query(default=None)` for a `str | None`-annotated parameter (e.g.
+# `api/admin/population_findings.py`'s `system_id` filter, M6) but not for
+# a `datetime | None`-annotated one (`api/admin/metrics.py`'s `since`) --
+# the identical idiomatic call, flagged only because of the query
+# parameter's type. Same fix, same reasoning, for the same false positive.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -1,0 +1,16 @@
+-- Supports M7's "verdict counts by status since a given timestamp"
+-- governance-health metric (architecture §9). verdicts has no index
+-- shaped for a time-bounded status count today. created_at leads the
+-- composite so a "created_at >= ..." range scan can still use the index
+-- to group by status -- see docs/milestones/M7.md §4.2/§13.15 for why
+-- this window is mandatory, not optional (an unbounded, all-time count
+-- over an ever-growing, retention-free table gets slower without limit).
+--
+-- NOTE: this file is applied via SQLAlchemy's text(), which treats a
+-- colon immediately followed by a word, anywhere in the string
+-- (including inside a SQL comment), as a bind-parameter placeholder.
+-- Never write that punctuation mark followed directly by an identifier
+-- in any migration file's comments (spell out "a given timestamp"
+-- instead), or db.migrate.apply_migrations raises "a value is required
+-- for bind parameter" before the DDL ever runs.
+CREATE INDEX idx_verdicts_created_at_status ON verdicts (created_at, status);

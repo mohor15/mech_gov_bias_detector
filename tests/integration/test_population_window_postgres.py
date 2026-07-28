@@ -111,9 +111,7 @@ def test_a_system_with_no_decisions_in_range_is_an_empty_window_not_an_error(
 def test_a_system_with_no_registered_domain_produces_an_empty_window(
     db_engine, seed_finance_decisions
 ) -> None:
-    system_id = seed_finance_decisions(
-        [({"country": "India"}, True, _IN_WINDOW)], domain=None
-    )
+    system_id = seed_finance_decisions([({"country": "India"}, True, _IN_WINDOW)], domain=None)
 
     window = build_population_window(
         db_engine, system_id=system_id, window_start=_WINDOW_START, window_end=_WINDOW_END

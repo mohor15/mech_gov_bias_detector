@@ -1,11 +1,11 @@
-# Architecture → Module Mapping (M6)
+# Architecture → Module Mapping (M7)
 
 Onboarding reference: which `ARCH-GOV-002` component each module implements,
 and the precise boundary as of this milestone — what's real today vs. what's
 deferred and to which milestone. Read alongside each module's own docstring,
 which is the authoritative source; this table is the map, not the territory.
 
-| Architecture component (§) | Module | Status as of M6 |
+| Architecture component (§) | Module | Status as of M7 |
 |---|---|---|
 | §4.1 Ingestion Gateway & Adapter Framework | `adapters/base.py`, `adapters/synthetic.py`, `adapters/credit_scorecard.py` | Real, generic (`Adapter[TPayload]`) port + two implementations. **Unchanged by M6** — both ingestion routes, and everything downstream of them, are byte-for-byte identical to M5 (see M6-specific notes: the async plane M6 builds is additive and parallel, not a change to per-event ingestion). |
 | §4.2 Normalization Service & Canonical Decision Event | `schemas/decision_event.py`, `normalization/service.py` | Real, minimal canonical schema; structural normalization only (whitespace, timezone, precision) — unchanged by M6. |
@@ -14,15 +14,88 @@ which is the authoritative source; this table is the map, not the territory.
 | §7 Policy Engine | `policy_engine/base.py`, `policy_engine/policies/*.py`, `schemas/policy_binding.py`, `db/repositories/policy_binding.py`, `api/admin/policy_bindings.py` | Real port + three reference policies, unchanged by M6. `Policy.evaluate(event) -> Finding`'s signature remains untouched — population-level evaluation is a deliberately separate, parallel port (`population_engine/base.py`, below), never a widened `Policy`. |
 | §7/§8 Population-Level Policy Engine | `population_engine/base.py` (`PopulationPolicy`, `PopulationWindow`, `PopulationGroupCount`), `population_engine/window.py`, `population_engine/policies/adverse_impact_ratio.py`, `population_engine/run_policies.py`, `schemas/population_finding.py`, `schemas/population_policy_binding.py`, `db/repositories/population_finding.py`, `db/repositories/population_policy_binding.py`, `api/admin/population_findings.py`, `api/admin/population_policy_bindings.py` | **New in M6.** A third plugin port, `PopulationPolicy`, evaluating many `DecisionEvent`s for one `System` over one time window into one `PopulationFinding` — structurally parallel to, and never touching, `Policy`/`Finding`/`Verdict`. One concrete policy ships: `adverse-impact-ratio` (EEOC "4/5ths rule", 29 CFR § 1607.4(D)). Triggered by an explicitly-invoked batch CLI (`population_engine/run_policies.py`), not a daemon or in-process scheduler — this *is* "the async ingestion plane" (§4.1's citation), read as the plane population-level policies specifically need, not a redesign of per-event ingestion. `PopulationPolicyBinding` is `system_id`-keyed, a new table, deliberately separate from `policy_bindings`. See M6-specific notes. |
 | §8 Governance Engine | `governance_engine/engine.py`, `schemas/verdict.py` | Unchanged by M6. `GovernanceEngine`/`GovernanceVerdict` remain per-event; population-level results never flow through them. |
-| §9 Monitoring | `observability/logging.py` | Structured logging only. System/governance-health metrics and dashboards are M7 — hence the separate, narrower `observability` package rather than `monitoring`. |
+| §9 Monitoring | `observability/logging.py`, `observability/metrics.py`, `api/readiness.py`, `api/admin/metrics.py` | **Real as of M7.** `GET /readyz` — a real readiness check (database connectivity only; "adapter/source reachability" is currently vacuous, no first-party `Adapter` has a real external dependency yet), additive alongside the unchanged `/healthz`. `GET /v1/admin/metrics?since=` — a single, DB-query-backed JSON aggregate of system-health (current-state) and governance-health (windowed) signal, no new persisted state, no Prometheus/OpenTelemetry, no dashboard/UI (see M7-specific notes). |
 | §10 Evaluation Framework | `population_engine/policies/adverse_impact_ratio.py` (one concrete metric only) | **Partially real as of M6** — one hardcoded population-level metric, not a general, pluggable statistical-evaluation framework. A configurable-metric framework (multiple tests, admin-defined thresholds) remains M8's job; M6 deliberately does not reach for it early (see `docs/milestones/M6.md` §13.9). |
 | §11 Compliance Dashboard | *(not yet built)* | M10. |
 | §12 Human Review Workflow | *(not yet built)* | M9 — an `ESCALATE_FOR_REVIEW` verdict (M5) and a `FLAGGED` `PopulationFinding` (M6) are both fully computed and persisted; nothing yet queues either for a human to act on. |
 | §13 Audit System | `audit/hash_chain.py`, `audit/evidence_store.py`, `audit/verify_chain.py`, `audit/signing.py`, `audit/verify_population_findings.py` | Real hash-chained Postgres ledger for per-event evidence, append-only enforced at the database-privilege level, plus a standalone chain-verification job/CLI — unchanged by M6. **New in M6**: `population_findings` gets the identical append-only privilege lockdown (`REVOKE UPDATE, DELETE`, migration `0015`) and is signed (reusing `audit/signing.py` unchanged) — but is **not chained** into `evidence_chain` (no `previous_hash`, no single `decision_event_id` it belongs to). `audit/verify_population_findings.py` is a separate, parallel verifier — a plain content hash over each finding's own canonical payload (including `classification_snapshot`), not `hash_chain`'s chained variant. Key rotation/KMS custody and retention tiers remain unassigned/M11 for both. |
 | §14 Reporting | *(not yet built)* | M12. |
-| §15 APIs | `api/health.py`, `api/ingestion/routes.py`, `api/admin/systems.py`, `api/admin/plugins.py`, `api/admin/policy_bindings.py`, `api/admin/protected_attribute_rules.py`, `api/admin/population_policy_bindings.py`, `api/admin/population_findings.py`, `api/app.py`, `api/asgi.py` | Ingestion routes are registry-generated (one per registered adapter — currently `synthetic` and `credit-scorecard`), **unchanged by M6**, same response shape. **New in M6**: the Population Policy Bindings Admin API (`create`/`list`/`get`/`activate`/`deactivate`, `system_id`-keyed) and the Population Findings Admin API (`list`/`get` only, optionally filtered by `system_id` — no `POST`; a finding is only ever produced by the batch CLI). No endpoint anywhere has authentication yet, including these two — the same standing gap M5 named, flagged more sharply here since a population finding's entire content is a disparate-impact judgment about a real system (see M6-specific notes). `app.py` is still the side-effect-free factory; the batch CLI is never wired into it. |
-| §16 Database Design | `db/session.py`, `db/models.py`, `db/migrate.py`, `db/repositories/`, `schemas/system.py`, `schemas/model_version.py`, `schemas/protected_attribute.py`, `schemas/plugin_registration.py`, `schemas/policy_binding.py`, `schemas/protected_attribute_rule.py`, `schemas/population_finding.py`, `schemas/population_policy_binding.py` | Real Postgres, formalized via numbered `.sql` migrations (schema authority) + a repository layer per entity. **New in M6**: `population_policy_bindings` (ordinary privileges, migration `0014`) and `population_findings` (append-only, migration `0015`) tables, plus an index on `decision_events(model_version_id, occurred_at)` (migration `0016`) supporting the one new windowed-read pattern this milestone introduces. No existing table altered. SQLAlchemy models are query-time mappings only — never used to generate DDL. Multi-tenancy and the analytical-warehouse split (the long-term answer to the "Event Lake" if real query volume ever demands one — see M6-specific notes) remain later milestones. |
-| §17 Deployment Architecture | `infra/docker/` | Single container, single service; assumes an external Postgres — unchanged by M6. The batch CLI runs as a separate process against the same database, not a second service definition; real scheduling of it (cron, a Kubernetes `CronJob`) is deployment topology, M13-adjacent, not built. Multi-plane topology, multi-tenancy, and mTLS are M13. |
+| §15 APIs | `api/health.py`, `api/readiness.py`, `api/ingestion/routes.py`, `api/admin/systems.py`, `api/admin/plugins.py`, `api/admin/policy_bindings.py`, `api/admin/protected_attribute_rules.py`, `api/admin/population_policy_bindings.py`, `api/admin/population_findings.py`, `api/admin/metrics.py`, `api/app.py`, `api/asgi.py` | Ingestion routes are registry-generated (one per registered adapter — currently `synthetic` and `credit-scorecard`), **unchanged by M7**, same response shape; `/healthz` also unchanged. **New in M7**: `GET /readyz` (additive, see §9 above) and `GET /v1/admin/metrics` (read-only, no `POST`). No endpoint anywhere has authentication yet, including these two — the same standing gap M5/M6 named, now a four-consecutive-milestone-and-counting gap (see M7-specific notes). `app.py` is still the side-effect-free factory. |
+| §16 Database Design | `db/session.py`, `db/models.py`, `db/migrate.py`, `db/repositories/`, `schemas/system.py`, `schemas/model_version.py`, `schemas/protected_attribute.py`, `schemas/plugin_registration.py`, `schemas/policy_binding.py`, `schemas/protected_attribute_rule.py`, `schemas/population_finding.py`, `schemas/population_policy_binding.py` | Real Postgres, formalized via numbered `.sql` migrations (schema authority) + a repository layer per entity. **New in M7**: three indexes (migrations `0017`–`0019`, on `verdicts`, `findings`, and `population_findings` respectively) supporting the new windowed metrics-aggregate read pattern — no new table, no existing table altered. `db/session.create_db_engine` now sets a bounded connection timeout (found necessary implementing the readiness check — see `docs/milestones/M7.md`'s production-readiness review), applying to every consumer of the shared engine. SQLAlchemy models are query-time mappings only — never used to generate DDL. Multi-tenancy and the analytical-warehouse split remain later milestones. |
+| §17 Deployment Architecture | `infra/docker/` | Single container, single service; assumes an external Postgres — unchanged by M7. A real orchestrator can now use `GET /readyz` as an actual readiness probe rather than reusing `/healthz` (liveness only) for both purposes. Multi-plane topology, multi-tenancy, and mTLS are M13. |
+
+## M7-specific notes
+
+- **"Monitoring" is a minimal, DB-query-backed JSON endpoint, not a
+  Prometheus/OpenTelemetry stack.** This platform has one deployment
+  environment and no established scraping infrastructure to integrate
+  with — introducing real metrics infrastructure now would be designing
+  against a deployment topology this project has never had a real case
+  for, the same "no second deployment environment" reasoning M5 already
+  applied to signing-key custody and M6 applied to a dedicated analytical
+  store. See `docs/milestones/M7.md` §13.1 — the highest-stakes call in
+  that document.
+- **No dashboard, no UI.** "Dashboards" in architecture §9's own citation
+  is read as describing what a *future* consumer (M10's Compliance
+  Dashboard) renders from M7's metrics, not something M7 itself
+  delivers — this platform has never built a UI anywhere in seven
+  milestones. See `docs/milestones/M7.md` §13.2.
+- **`/readyz` is additive; `/healthz` is byte-for-byte unchanged.**
+  Mirrors this project's own standing discipline for an existing,
+  already-depended-on endpoint (M2's second ingestion route left the
+  first unchanged; M6's population pipeline left both ingestion routes
+  unchanged). See `docs/milestones/M7.md` §13.3.
+- **Governance-health metrics are windowed (`?since=`, default 24h);
+  system-health metrics are not.** An unbounded, all-time count over
+  `verdicts`/`findings`/`population_findings` — tables with no retention
+  policy, M11 not built — would get slower without limit for as long as
+  the platform runs. Found during this milestone's own design-phase
+  hostile-review pass, not in the original draft. See
+  `docs/milestones/M7.md` §13.15.
+- **`evidence_chain`'s size is read via a tail-row `ORDER BY
+  sequence_number DESC LIMIT 1`, never `COUNT(*)`.** Postgres has no
+  fast, O(1) row count under MVCC; `evidence_chain` is the one table in
+  this schema that is permanent and never shrinks, making a `COUNT(*)`
+  mistake here the most severe possible instance of it. The response
+  field is named `evidence_chain_latest_sequence_number`, not
+  `..._length`, specifically so its own name doesn't invite the mistake.
+  See `docs/milestones/M7.md` §13.16.
+- **Population-binding staleness is a `LEFT JOIN` anchored on `ACTIVE`
+  `population_policy_bindings`, never an aggregate starting from
+  `population_findings`.** A binding that has never once produced a
+  finding — the single most important case this metric exists to catch —
+  would otherwise be silently absent from the result instead of showing
+  the loudest possible staleness signal (`None`). See
+  `docs/milestones/M7.md` §13.17.
+- **The readiness check reads a real table (`systems`), not a bare
+  `SELECT 1`.** Found during this milestone's own post-implementation
+  hostile review: a query touching no table proves connectivity and
+  authentication but nothing about whether the running role's actual
+  table-level grants are intact — a role that could log in but had every
+  grant revoked would still report "reachable." See
+  `docs/milestones/M7.md`'s production-readiness review.
+- **A bounded database-connection timeout, found necessary while
+  implementing the readiness check, not designed in advance.** Connecting
+  to a genuinely unreachable host (a silently dropped route, not a fast
+  "connection refused") could otherwise hang for the OS's full
+  TCP-retransmission timeout — well over a minute, observed directly
+  during this milestone's implementation. `db/session.create_db_engine`
+  now bounds this for every consumer of the shared engine. See
+  `docs/milestones/M7.md`'s production-readiness review.
+- **No sandbox-timeout counter — reversed from this milestone's own
+  first design draft.** A process-local, in-memory counter would silently
+  produce wrong (undercounted, non-additive across replicas) numbers the
+  moment this platform runs more than one worker/replica — the one
+  metric in this design that would have broken the "computed from
+  shared, durable Postgres state, therefore automatically correct under
+  horizontal scaling" property every other metric here correctly has.
+  `plugins/sandbox.py` remains completely untouched by M7. See
+  `docs/milestones/M7.md` §13.11.
+- **No authentication was added anywhere, including the two new M7
+  endpoints** — consistent with every existing endpoint, but now a
+  fourth consecutive milestone (M5, M6, M7) widening a gap every one of
+  these reviews has flagged rather than solved. See
+  `docs/milestones/M7.md` §13.10.
 
 ## M6-specific notes
 

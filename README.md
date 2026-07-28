@@ -1,28 +1,28 @@
-# AI Governance Platform — M6: Async Population-Policy Evaluation Plane & Adverse Impact Ratio
+# AI Governance Platform — M7: Monitoring — Governance & System Health
 
 A domain-agnostic observation-and-evaluation layer for LLM copilots, classical
 ML models, rule engines, and hybrid decision systems. This repository
 implements the frozen V2 architecture (`ARCH-GOV-002`) incrementally, per the
 frozen implementation plan (`IMPL-GOV-001`).
 
-**Current milestone: M6.** Adds a second, parallel governance pipeline
-alongside the existing synchronous, per-event one: a `PopulationPolicy`
-port that evaluates many `DecisionEvent`s for one `System` over one time
-window, an explicitly-invoked batch job (`population_engine/run_policies.py`)
-that runs it on a fixed, calendar-aligned schedule, and one concrete policy
-— adverse impact ratio, the EEOC "four-fifths rule". **Both existing
-ingestion routes and everything downstream of them are byte-for-byte
-unchanged** — see
+**Current milestone: M7.** Delivers architecture §9 ("Monitoring"): a real
+readiness check (`GET /readyz`, additive alongside the unchanged
+`/healthz`) and a single, DB-query-backed metrics endpoint
+(`GET /v1/admin/metrics`) exposing system-health (current-state) and
+governance-health (time-windowed) signal over data every prior milestone
+already produces. **No new persisted domain state, no dashboard/UI, no
+metrics-store technology, and every existing endpoint's contract is
+byte-for-byte unchanged** — see
 [`docs/architecture-mapping.md`](docs/architecture-mapping.md) for exactly
 what each module does and does not yet do, and
-[`docs/milestones/M6.md`](docs/milestones/M6.md) for the full design
+[`docs/milestones/M7.md`](docs/milestones/M7.md) for the full design
 review, hostile-review-pass corrections, and production-readiness report.
 
 > **Do not point this milestone at real applicant/subject data.** The
 > Evidence Store (and `protected_attribute_resolutions`) has no encryption
 > at rest and no retention controls yet (M11), and there is still no auth in
-> front of any endpoint — including the M6 admin surface below, whose
-> entire content is a disparate-impact judgment about a real system — a
+> front of any endpoint — including the M7 metrics endpoint below, which
+> exposes aggregate compliance-sensitive signal about real systems — a
 > platform-wide gap no milestone has closed yet (M13). Synthetic data only.
 
 Version 1 (a single-domain prototype, superseded by this design) is preserved,
@@ -259,6 +259,50 @@ independently verified (population findings aren't chained into
 python -m gov_platform.audit.verify_population_findings --database-url "$GOV_PLATFORM_DATABASE_URL" --public-key <hex>
 ```
 
+**Monitoring (M7)** — a real readiness check, additive alongside the
+unchanged `/healthz`:
+
+```bash
+curl http://127.0.0.1:8000/readyz
+# {"status":"READY"}   (200; 503 + {"detail":"database unreachable"} if the database can't be reached)
+```
+
+**Governance- and system-health metrics** — one JSON aggregate, computed
+on demand from existing tables, no new persisted state. `since` scopes
+only the governance-health half (recent activity) and defaults to the
+last 24 hours; system-health fields describe current state and are never
+windowed:
+
+```bash
+curl http://127.0.0.1:8000/v1/admin/metrics
+curl "http://127.0.0.1:8000/v1/admin/metrics?since=2026-07-01T00:00:00Z"
+# {
+#   "system": {
+#     "db_reachable": true, "db_latency_ms": 1.8,
+#     "evidence_chain_latest_sequence_number": 57,
+#     "plugin_counts": {"ADAPTER": {"PRODUCTION": 2}, ...},
+#     "population_binding_staleness": {"<binding-id>": "2026-07-28T08:38:12Z", ...}
+#   },
+#   "governance": {
+#     "window_start": "...", "window_end": "...",
+#     "verdict_counts_by_status": {"ALLOW": 49, "RECOMMEND_HOLD": 1, ...},
+#     "finding_counts_by_policy": {"direct-attribute-in-inputs": {"CLEAR": 7, "FLAGGED": 1}, ...},
+#     "population_finding_counts_by_policy": {"adverse-impact-ratio": {"CLEAR": 38, "FLAGGED": 14}},
+#     "shadow_disagreement_rate_by_policy": {"direct-attribute-in-inputs": 1.0}
+#   },
+#   "computed_at": "..."
+# }
+```
+
+`since` must be timezone-aware — a naive timestamp (no `Z`/offset) is a
+`422`, the same discipline every persisted timestamp in this codebase
+already requires. A policy family with no comparable shadow/production
+pairs in the window is omitted from `shadow_disagreement_rate_by_policy`
+entirely, not reported as a misleading `0.0`; a `population_policy_binding`
+that has never produced a finding shows up in
+`population_binding_staleness` with a `null` value, not silently absent —
+the loudest possible "this isn't running" signal, not an omission.
+
 ## Run with Docker
 
 ```bash
@@ -276,6 +320,7 @@ next, not implied by anything M1 committed to).
 
 ```bash
 ruff check src tests      # lint
+ruff format --check src tests  # formatting (M7 on)
 mypy src                  # type-check (strict, src/ only)
 pytest                    # runs everything that doesn't need Postgres; DB-dependent tests skip cleanly
 ```
@@ -319,7 +364,8 @@ pre-commit install        # optional: run ruff + mypy on every commit
 ```
 src/gov_platform/
   config/              Settings (env-driven)
-  observability/       Structured (JSON) logging
+  observability/       logging.py (structured JSON logging); metrics.py (system-/governance-health
+                       aggregate queries, M7 -- no new persisted state, no metrics-store technology)
   schemas/             Canonical DecisionEvent, Finding, GovernanceVerdict, System, ModelVersion,
                        ResolvedProtectedAttribute, PluginRegistration, PolicyBinding,
                        ProtectedAttributeRule, PopulationFinding, PopulationPolicyBinding
@@ -344,13 +390,14 @@ src/gov_platform/
     asgi.py            The only module that constructs the default instance
     dependencies.py    DI providers, typed against ports where ports exist
     middleware.py      MaxBodySizeMiddleware
-    health.py          GET /healthz
-    ingestion/         Registry-generated: one route per registered adapter (unchanged by M6)
+    health.py          GET /healthz (liveness only, unchanged since M0)
+    readiness.py       GET /readyz (real DB-connectivity check, M7 -- additive, not a redefinition)
+    ingestion/         Registry-generated: one route per registered adapter (unchanged since M5)
     admin/             systems, plugins (register/list/get/promote), policy-bindings
                        (create/list/get/activate/deactivate), protected-attribute-rules
                        (create/list/get), population-policy-bindings
                        (create/list/get/activate/deactivate), population-findings
-                       (list/get, read-only)
+                       (list/get, read-only), metrics (GET, read-only, M7)
 infra/
   docker/              Dockerfile, docker-compose.yml
   migrations/          Numbered, Postgres-targeting .sql files
@@ -360,38 +407,45 @@ tests/integration/     Full HTTP/DB round-trip tests; most need @requires_postgr
 legacy_v1/             Superseded V1 prototype (reference only, not run)
 ```
 
-## What M6 deliberately does not include
+## What M7 deliberately does not include
 
 Every module has a docstring stating precisely which milestone owns the
-capability it doesn't yet have. The short version: a general, pluggable
-Evaluation Framework (one concrete metric shipped, not a configurable
-framework — M8), real scheduling of the batch job (cron/`CronJob` —
-deployment topology, M13-adjacent), a dedicated analytical store for the
-"Event Lake" (the existing operational tables are reused, not
-duplicated), severity/escalation for population findings (stay purely
-informational — no Human Review Workflow, M9, exists yet for *any*
-escalated output to go to), recomputing a historical window under today's
-(changed) rules (a distinct "what-if" capability, not built),
-domain/jurisdiction-keyed Policy Bindings (still only `adapter_id`-keyed —
-M5's own deferral, unresolved by M6), unifying `DirectAttributeInInputsPolicy`
-with the DB-backed protected-attribute rules (still M5's named
-divergence), signing-key rotation and KMS/HSM custody (a single static
-key, no more), the Compliance Dashboard (M10), real OS-level plugin
-isolation beyond the timeout/exception sandbox (no milestone named yet —
-see `docs/milestones/M3.md` §13.1), encryption at rest and retention
-(M11), authentication in front of any endpoint including the two new M6
-admin routes (no milestone has closed this yet — M13, flagged more
-sharply at M6 than at any prior milestone — see
-`docs/milestones/M6.md` §13.14), and comprehensive request-abuse
-protection beyond the `Content-Length` check added during M0's
-finalization (M13). Building any of that now would violate the
-milestone's own scope.
+capability it doesn't yet have. The short version: real metrics
+infrastructure (Prometheus/OpenTelemetry, tracing, latency histograms —
+no established scraping infrastructure exists to integrate with yet, and
+this platform has no second deployment environment to design one
+against), any dashboard/UI (M10's Compliance Dashboard — "dashboards" in
+architecture §9's own citation is read as describing what a *future*
+consumer renders from M7's metrics, not something M7 itself delivers),
+caching/materialization of metrics (computed fresh on every request this
+milestone), a sandbox-timeout counter (reversed out of scope entirely
+during this milestone's own hostile-review pass — a process-local
+metric would silently produce wrong numbers under horizontal scaling,
+the one property every other metric here correctly avoids by being
+DB-backed), a general, pluggable Evaluation Framework (M8), a dedicated
+analytical store for the "Event Lake" (M6), severity/escalation for
+population findings (M6), domain/jurisdiction-keyed Policy Bindings
+(M5's own deferral), unifying `DirectAttributeInInputsPolicy` with the
+DB-backed protected-attribute rules (M5's named divergence), signing-key
+rotation and KMS/HSM custody (M5), the Compliance Dashboard (M10), real
+OS-level plugin isolation beyond the timeout/exception sandbox (no
+milestone named yet), encryption at rest and retention (M11),
+authentication in front of any endpoint including the two new M7
+endpoints (no milestone has closed this yet — M13, now a four-consecutive-
+milestone-and-counting gap — see `docs/milestones/M7.md` §13.10), and
+comprehensive request-abuse protection beyond the `Content-Length` check
+added during M0's finalization (M13). Building any of that now would
+violate the milestone's own scope.
 
-## What remains after M6
+## What remains after M7
 
-See [`docs/milestones/M6.md`](docs/milestones/M6.md) for the full
+See [`docs/milestones/M7.md`](docs/milestones/M7.md) for the full
 production-readiness review and design record, including every deferred
 item's reasoning. In short: M8 is a general Evaluation Framework (M6
-ships one concrete population-level metric, not the framework); M9 is
-the Human Review Workflow that finally gives an `ESCALATE_FOR_REVIEW`
-verdict (M5) or a `FLAGGED` `PopulationFinding` (M6) somewhere to go.
+shipped one concrete population-level metric, not the framework; M7
+exposes counts of judgments already computed, computes no new ones);
+M9 is the Human Review Workflow that finally gives an
+`ESCALATE_FOR_REVIEW` verdict (M5) or a `FLAGGED` `PopulationFinding`
+(M6) somewhere to go, both now countable via `/v1/admin/metrics` but
+acted on by nobody yet; M10 is the Compliance Dashboard that would
+actually render M7's metrics for a human.

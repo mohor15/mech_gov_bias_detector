@@ -150,9 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         "closed window and persist the results."
     )
     parser.add_argument("--database-url", required=True, help="The app's own runtime connection")
-    parser.add_argument(
-        "--window-start", required=False, help="ISO 8601 UTC timestamp, inclusive."
-    )
+    parser.add_argument("--window-start", required=False, help="ISO 8601 UTC timestamp, inclusive.")
     parser.add_argument("--window-end", required=False, help="ISO 8601 UTC timestamp, exclusive.")
     args = parser.parse_args(argv)
 
