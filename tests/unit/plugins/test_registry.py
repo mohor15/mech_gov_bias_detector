@@ -22,16 +22,22 @@ from gov_platform.adapters.base import Adapter
 from gov_platform.plugins.registry import (
     get_adapter_class,
     get_policy_class,
+    get_population_policy_class,
     known_adapter_keys,
     known_policy_keys,
+    known_population_policy_keys,
     register_adapter,
     register_policy,
+    register_population_policy,
     unregister_adapter,
     unregister_policy,
+    unregister_population_policy,
 )
 from gov_platform.policy_engine.base import Policy
+from gov_platform.population_engine.base import PopulationPolicy, PopulationWindow
 from gov_platform.schemas.decision_event import DecisionEvent
 from gov_platform.schemas.finding import Finding
+from gov_platform.schemas.population_finding import PopulationFinding
 
 
 class _FakePayload(BaseModel):
@@ -54,6 +60,14 @@ class _FakePolicy(Policy):
         raise NotImplementedError
 
 
+class _FakePopulationPolicy(PopulationPolicy):
+    population_policy_id = "test-fake-population-policy"
+    version = "0.0.1"
+
+    def evaluate(self, window: PopulationWindow) -> PopulationFinding:
+        raise NotImplementedError
+
+
 @pytest.fixture
 def registered_fake_adapter() -> Iterator[type[_FakeAdapter]]:
     register_adapter(_FakeAdapter)
@@ -70,6 +84,17 @@ def registered_fake_policy() -> Iterator[type[_FakePolicy]]:
         yield _FakePolicy
     finally:
         unregister_policy(_FakePolicy.policy_id, _FakePolicy.version)
+
+
+@pytest.fixture
+def registered_fake_population_policy() -> Iterator[type[_FakePopulationPolicy]]:
+    register_population_policy(_FakePopulationPolicy)
+    try:
+        yield _FakePopulationPolicy
+    finally:
+        unregister_population_policy(
+            _FakePopulationPolicy.population_policy_id, _FakePopulationPolicy.version
+        )
 
 
 def test_register_adapter_makes_it_findable_by_id_and_version(
@@ -152,3 +177,40 @@ def test_the_m4_second_policy_is_registered_once_bootstrapped() -> None:
     bootstrap_plugins()
 
     assert ("high-debt-ratio-gate", "0.1.0") in known_policy_keys()
+
+
+def test_register_population_policy_makes_it_findable_by_id_and_version(
+    registered_fake_population_policy: type[_FakePopulationPolicy],
+) -> None:
+    assert (
+        get_population_policy_class("test-fake-population-policy", "0.0.1")
+        is registered_fake_population_policy
+    )
+
+
+def test_unknown_population_policy_returns_none() -> None:
+    assert get_population_policy_class("does-not-exist", "0.0.1") is None
+
+
+def test_known_population_policy_keys_includes_the_registered_fake(
+    registered_fake_population_policy: type[_FakePopulationPolicy],
+) -> None:
+    assert ("test-fake-population-policy", "0.0.1") in known_population_policy_keys()
+
+
+def test_unregister_population_policy_makes_it_unfindable_again() -> None:
+    register_population_policy(_FakePopulationPolicy)
+    unregister_population_policy(
+        _FakePopulationPolicy.population_policy_id, _FakePopulationPolicy.version
+    )
+
+    assert get_population_policy_class("test-fake-population-policy", "0.0.1") is None
+    assert ("test-fake-population-policy", "0.0.1") not in known_population_policy_keys()
+
+
+def test_the_m6_population_policy_is_registered_once_bootstrapped() -> None:
+    from gov_platform.plugins.bootstrap import bootstrap_plugins
+
+    bootstrap_plugins()
+
+    assert ("adverse-impact-ratio", "0.1.0") in known_population_policy_keys()

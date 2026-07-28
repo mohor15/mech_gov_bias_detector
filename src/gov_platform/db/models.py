@@ -165,3 +165,36 @@ class ProtectedAttributeRuleRow(Base):
     classification: Mapped[str] = mapped_column(String, nullable=False)
     proxy_of: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PopulationPolicyBindingRow(Base):
+    __tablename__ = "population_policy_bindings"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    system_id: Mapped[str] = mapped_column(String, ForeignKey("systems.id"), nullable=False)
+    population_policy_id: Mapped[str] = mapped_column(String, nullable=False)
+    lifecycle_state: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PopulationFindingRow(Base):
+    __tablename__ = "population_findings"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    population_policy_id: Mapped[str] = mapped_column(String, nullable=False)
+    population_policy_version: Mapped[str] = mapped_column(String, nullable=False)
+    system_id: Mapped[str] = mapped_column(String, ForeignKey("systems.id"), nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    outcome: Mapped[str] = mapped_column(String, nullable=False)
+    metric_values: Mapped[str] = mapped_column(Text, nullable=False)
+    classification_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Never None in practice (unlike evidence_chain's M0-M4 backfill case --
+    # population_findings did not exist before signing did), but nullable
+    # at the schema level for the same reason evidence_chain's are: a
+    # signature can only ever be set once, at INSERT time (see migration
+    # 0015's REVOKE UPDATE, DELETE).
+    signature: Mapped[str | None] = mapped_column(Text, nullable=True)
+    signing_key_id: Mapped[str | None] = mapped_column(String, nullable=True)

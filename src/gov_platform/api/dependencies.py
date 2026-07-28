@@ -27,6 +27,14 @@ routes' per-request policy-lifecycle lookups.
 M5: `get_policy_binding_repository` and `get_protected_attribute_rule_repository`
 are new — needed by the new Admin API surfaces and (the former) by the
 generated ingestion routes' per-request policy resolution.
+
+M6: `get_population_policy_binding_repository` and
+`get_population_finding_repository` are new — needed by the two new Admin
+API surfaces (`population_engine/run_policies.py`'s batch job constructs
+its own repositories directly, the same way `plugins/seed_registry.py`
+always has, rather than going through this FastAPI-specific module).
+`get_system_repository` (M1) is now also used by the Population Policy
+Bindings Admin API, to validate `system_id` before creating a binding.
 """
 
 from __future__ import annotations
@@ -37,6 +45,10 @@ from sqlalchemy.engine import Engine
 from gov_platform.audit.evidence_store import EvidenceStore
 from gov_platform.db.repositories.plugin_registration import PluginRegistrationRepository
 from gov_platform.db.repositories.policy_binding import PolicyBindingRepository
+from gov_platform.db.repositories.population_finding import PopulationFindingRepository
+from gov_platform.db.repositories.population_policy_binding import (
+    PopulationPolicyBindingRepository,
+)
 from gov_platform.db.repositories.protected_attribute_rule import ProtectedAttributeRuleRepository
 from gov_platform.db.repositories.shadow_finding import ShadowFindingRepository
 from gov_platform.db.repositories.system import SystemRepository
@@ -87,4 +99,18 @@ def get_protected_attribute_rule_repository(
     repository: ProtectedAttributeRuleRepository = (
         request.app.state.protected_attribute_rule_repository
     )
+    return repository
+
+
+def get_population_policy_binding_repository(
+    request: Request,
+) -> PopulationPolicyBindingRepository:
+    repository: PopulationPolicyBindingRepository = (
+        request.app.state.population_policy_binding_repository
+    )
+    return repository
+
+
+def get_population_finding_repository(request: Request) -> PopulationFindingRepository:
+    repository: PopulationFindingRepository = request.app.state.population_finding_repository
     return repository

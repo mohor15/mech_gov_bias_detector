@@ -1,26 +1,28 @@
-# AI Governance Platform — M5: Policy Bindings, Verdict Escalation & Evidence Signing
+# AI Governance Platform — M6: Async Population-Policy Evaluation Plane & Adverse Impact Ratio
 
 A domain-agnostic observation-and-evaluation layer for LLM copilots, classical
 ML models, rule engines, and hybrid decision systems. This repository
 implements the frozen V2 architecture (`ARCH-GOV-002`) incrementally, per the
 frozen implementation plan (`IMPL-GOV-001`).
 
-**Current milestone: M5.** Replaces the static, code-defined
-`Adapter.governing_policy_ids` with a database-backed Policy Binding
-(admin-managed, no redeploy needed), gives `GovernanceEngine` the real
-four-state verdict model (`ALLOW` / `ALLOW_WITH_FLAG` / `ESCALATE_FOR_REVIEW`
-/ `RECOMMEND_HOLD`) driven by each binding's severity, signs every evidence
-record (Ed25519), and moves protected-attribute classification rules off
-static code for `EvidenceStore`'s resolution path. See
+**Current milestone: M6.** Adds a second, parallel governance pipeline
+alongside the existing synchronous, per-event one: a `PopulationPolicy`
+port that evaluates many `DecisionEvent`s for one `System` over one time
+window, an explicitly-invoked batch job (`population_engine/run_policies.py`)
+that runs it on a fixed, calendar-aligned schedule, and one concrete policy
+— adverse impact ratio, the EEOC "four-fifths rule". **Both existing
+ingestion routes and everything downstream of them are byte-for-byte
+unchanged** — see
 [`docs/architecture-mapping.md`](docs/architecture-mapping.md) for exactly
 what each module does and does not yet do, and
-[`docs/milestones/M5.md`](docs/milestones/M5.md) for the full milestone
-report.
+[`docs/milestones/M6.md`](docs/milestones/M6.md) for the full design
+review, hostile-review-pass corrections, and production-readiness report.
 
 > **Do not point this milestone at real applicant/subject data.** The
 > Evidence Store (and `protected_attribute_resolutions`) has no encryption
 > at rest and no retention controls yet (M11), and there is still no auth in
-> front of any endpoint — including the M5 admin surface below — a
+> front of any endpoint — including the M6 admin surface below, whose
+> entire content is a disparate-impact judgment about a real system — a
 > platform-wide gap no milestone has closed yet (M13). Synthetic data only.
 
 Version 1 (a single-domain prototype, superseded by this design) is preserved,
@@ -202,6 +204,61 @@ python -m gov_platform.audit.verify_chain --database-url "$GOV_PLATFORM_DATABASE
 python -m gov_platform.audit.verify_chain --database-url "$GOV_PLATFORM_DATABASE_URL" --public-key <hex>
 ```
 
+**Population-level policies (M6)** — a second, parallel governance
+pipeline. Unlike the per-event policies above, `adverse-impact-ratio`
+evaluates *many* decisions for one system at once, so it isn't run inline
+with an ingestion request: bind it to a system, then invoke the batch job
+whenever you want it evaluated (a real deployment would put this on a
+cron/`CronJob`; this milestone doesn't build that scheduling itself — see
+[`docs/milestones/M6.md`](docs/milestones/M6.md) §13.4). `adverse-impact-ratio`
+is already seeded to `PRODUCTION` by the `seed_registry` step above — what's
+missing on a fresh database is a *binding*, telling it which system to
+monitor (deliberately not auto-seeded — see `plugins/seed_registry.py`'s
+module docstring for why):
+
+```bash
+# <system-id> is the "id" field returned when credit-scorecard-prod was
+# registered above (not its name) -- population_policy_bindings.system_id
+# is a real foreign key into systems.id.
+curl -X POST http://127.0.0.1:8000/v1/admin/population-policy-bindings \
+  -H "Content-Type: application/json" \
+  -d '{"system_id": "<system-id>", "population_policy_id": "adverse-impact-ratio"}'
+
+curl http://127.0.0.1:8000/v1/admin/population-policy-bindings
+curl -X POST http://127.0.0.1:8000/v1/admin/population-policy-bindings/<binding-id>/deactivate
+```
+
+Run the batch job — by default, evaluates every active binding against
+"yesterday's full UTC day" (fixed and calendar-aligned, not a rolling
+window — see `docs/milestones/M6.md` §13.13); `--window-start`/
+`--window-end` (both together, ISO 8601 UTC) override this for a specific
+past window instead:
+
+```bash
+python -m gov_platform.population_engine.run_policies --database-url "$GOV_PLATFORM_DATABASE_URL"
+# FINDING <system-id> -> adverse-impact-ratio: CLEAR [2026-07-27, 2026-07-28)
+
+# Re-running the same window is a clean, detectable no-op, not a duplicate:
+python -m gov_platform.population_engine.run_policies --database-url "$GOV_PLATFORM_DATABASE_URL"
+# SKIP <system-id> -> adverse-impact-ratio: window [...) already computed
+```
+
+Read the results — read-only; a `PopulationFinding` is only ever produced
+by the batch job above, never created through this API:
+
+```bash
+curl http://127.0.0.1:8000/v1/admin/population-findings
+curl "http://127.0.0.1:8000/v1/admin/population-findings?system_id=<a-system-id>"
+```
+
+Every finding is signed the same way evidence records are, but
+independently verified (population findings aren't chained into
+`evidence_chain` — see `docs/milestones/M6.md` §13.5):
+
+```bash
+python -m gov_platform.audit.verify_population_findings --database-url "$GOV_PLATFORM_DATABASE_URL" --public-key <hex>
+```
+
 ## Run with Docker
 
 ```bash
@@ -239,10 +296,14 @@ pytest --cov-fail-under=98   # the coverage floor only means something with POST
 
 You do **not** need to run `plugins.seed_registry` separately before
 `pytest`: a session-scoped, autouse fixture (`tests/conftest._seed_plugin_registry`)
-seeds the four first-party plugins to `PRODUCTION` automatically whenever
-`POSTGRES_URL` is set, since essentially every ingestion-route test now
-depends on it. Real deployments (and the Docker smoke test below) do need
-the explicit CLI step — there's no pytest fixture running there.
+seeds every first-party plugin (including `adverse-impact-ratio`, M6) to
+`PRODUCTION` automatically whenever `POSTGRES_URL` is set, since
+essentially every ingestion-route test now depends on it. Real
+deployments (and the Docker smoke test below) do need the explicit CLI
+step — there's no pytest fixture running there. A `PopulationPolicyBinding`
+is never auto-seeded (by the fixture or by `seed_registry` — see that
+module's docstring) — tests that need one create it against a system they
+control, the same way a real operator would via the Admin API.
 
 CI always sets `POSTGRES_URL` (a real Postgres 16 service container) and
 enforces the coverage floor there — see `.github/workflows/ci.yml`.
@@ -261,7 +322,7 @@ src/gov_platform/
   observability/       Structured (JSON) logging
   schemas/             Canonical DecisionEvent, Finding, GovernanceVerdict, System, ModelVersion,
                        ResolvedProtectedAttribute, PluginRegistration, PolicyBinding,
-                       ProtectedAttributeRule
+                       ProtectedAttributeRule, PopulationFinding, PopulationPolicyBinding
   adapters/            Adapter[TPayload] port (+ adapter_id/version identity)
                        + SyntheticAdapter, CreditScorecardAdapter
   normalization/       Structural normalization pass
@@ -271,10 +332,12 @@ src/gov_platform/
                        HighDebtRatioGatePolicy
   governance_engine/   Aggregates every governing Policy's Finding into one Verdict, severity-driven
                        (GoverningPolicy bundles a Policy with its binding's PolicySeverity)
+  population_engine/   PopulationPolicy port (M6) + AdverseImpactRatioPolicy; window.py (the
+                       "Event Lake" windowed read); run_policies.py (the async-plane batch CLI)
   plugins/             registry.py (in-process catalog), bootstrap.py (first-party imports),
                        sandbox.py (timeout + exception isolation), seed_registry.py (CLI)
   audit/               hash_chain.py (pure), evidence_store.py (Postgres), verify_chain.py,
-                       signing.py (Ed25519 evidence signing)
+                       signing.py (Ed25519 evidence signing), verify_population_findings.py
   db/                  session.py, migrate.py, models.py, repositories/
   api/
     app.py             Composition root -- builds routes from the plugin registry
@@ -282,10 +345,12 @@ src/gov_platform/
     dependencies.py    DI providers, typed against ports where ports exist
     middleware.py      MaxBodySizeMiddleware
     health.py          GET /healthz
-    ingestion/         Registry-generated: one route per registered adapter
+    ingestion/         Registry-generated: one route per registered adapter (unchanged by M6)
     admin/             systems, plugins (register/list/get/promote), policy-bindings
                        (create/list/get/activate/deactivate), protected-attribute-rules
-                       (create/list/get)
+                       (create/list/get), population-policy-bindings
+                       (create/list/get/activate/deactivate), population-findings
+                       (list/get, read-only)
 infra/
   docker/              Dockerfile, docker-compose.yml
   migrations/          Numbered, Postgres-targeting .sql files
@@ -295,29 +360,38 @@ tests/integration/     Full HTTP/DB round-trip tests; most need @requires_postgr
 legacy_v1/             Superseded V1 prototype (reference only, not run)
 ```
 
-## What M5 deliberately does not include
+## What M6 deliberately does not include
 
 Every module has a docstring stating precisely which milestone owns the
-capability it doesn't yet have. The short version: domain/jurisdiction-keyed
-Policy Bindings (only `adapter_id`-keyed shipped — no second real domain
-exists yet to design the richer key against), unifying
-`DirectAttributeInInputsPolicy` with the DB-backed protected-attribute
-rules (it deliberately still reads the static, in-code ruleset), signing-key
-rotation and KMS/HSM custody (a single static key, no more), the Human
-Review Workflow that actually consumes an `ESCALATE_FOR_REVIEW` verdict
-(M9), the Compliance Dashboard (M10), async ingestion and population-level
-policies (M6), real OS-level plugin isolation beyond the timeout/exception
-sandbox (no milestone named yet — see `docs/milestones/M3.md` §13.1),
-encryption at rest and retention (M11), authentication in front of any
-endpoint including the two new M5 admin routes (no milestone has closed
-this yet — M13), and comprehensive request-abuse protection beyond the
-`Content-Length` check added during M0's finalization (M13). Building any
-of that now would violate the milestone's own scope.
+capability it doesn't yet have. The short version: a general, pluggable
+Evaluation Framework (one concrete metric shipped, not a configurable
+framework — M8), real scheduling of the batch job (cron/`CronJob` —
+deployment topology, M13-adjacent), a dedicated analytical store for the
+"Event Lake" (the existing operational tables are reused, not
+duplicated), severity/escalation for population findings (stay purely
+informational — no Human Review Workflow, M9, exists yet for *any*
+escalated output to go to), recomputing a historical window under today's
+(changed) rules (a distinct "what-if" capability, not built),
+domain/jurisdiction-keyed Policy Bindings (still only `adapter_id`-keyed —
+M5's own deferral, unresolved by M6), unifying `DirectAttributeInInputsPolicy`
+with the DB-backed protected-attribute rules (still M5's named
+divergence), signing-key rotation and KMS/HSM custody (a single static
+key, no more), the Compliance Dashboard (M10), real OS-level plugin
+isolation beyond the timeout/exception sandbox (no milestone named yet —
+see `docs/milestones/M3.md` §13.1), encryption at rest and retention
+(M11), authentication in front of any endpoint including the two new M6
+admin routes (no milestone has closed this yet — M13, flagged more
+sharply at M6 than at any prior milestone — see
+`docs/milestones/M6.md` §13.14), and comprehensive request-abuse
+protection beyond the `Content-Length` check added during M0's
+finalization (M13). Building any of that now would violate the
+milestone's own scope.
 
-## What remains after M5
+## What remains after M6
 
-See [`docs/milestones/M5.md`](docs/milestones/M5.md) for the full
+See [`docs/milestones/M6.md`](docs/milestones/M6.md) for the full
 production-readiness review and design record, including every deferred
-item's reasoning. In short: M6 is async ingestion and population-level
-policies; M9 is the Human Review Workflow that finally gives an
-`ESCALATE_FOR_REVIEW` verdict somewhere to go.
+item's reasoning. In short: M8 is a general Evaluation Framework (M6
+ships one concrete population-level metric, not the framework); M9 is
+the Human Review Workflow that finally gives an `ESCALATE_FOR_REVIEW`
+verdict (M5) or a `FLAGGED` `PopulationFinding` (M6) somewhere to go.

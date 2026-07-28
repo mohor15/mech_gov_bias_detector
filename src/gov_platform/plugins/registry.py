@@ -15,6 +15,11 @@ which is a database fact an admin controls at runtime without a redeploy
 — see `db/repositories/plugin_registration.py`. This module only ever
 answers "does an implementation for this id/version exist in this
 process?", never "is it currently trusted to run?".
+
+M6: `register_population_policy`/`get_population_policy_class`/
+`known_population_policy_keys` extend the exact same mechanism to
+`PopulationPolicy` (`population_engine/base.py`) — the third plugin kind,
+no second registry invented. See `docs/milestones/M6.md` §13.7.
 """
 
 from __future__ import annotations
@@ -23,12 +28,15 @@ from typing import Any
 
 from gov_platform.adapters.base import Adapter
 from gov_platform.policy_engine.base import Policy
+from gov_platform.population_engine.base import PopulationPolicy
 
 _AdapterClass = type[Adapter[Any]]
 _PolicyClass = type[Policy]
+_PopulationPolicyClass = type[PopulationPolicy]
 
 _adapters: dict[tuple[str, str], _AdapterClass] = {}
 _policies: dict[tuple[str, str], _PolicyClass] = {}
+_population_policies: dict[tuple[str, str], _PopulationPolicyClass] = {}
 
 
 def register_adapter(adapter_cls: _AdapterClass) -> _AdapterClass:
@@ -45,12 +53,27 @@ def register_policy(policy_cls: _PolicyClass) -> _PolicyClass:
     return policy_cls
 
 
+def register_population_policy(
+    population_policy_cls: _PopulationPolicyClass,
+) -> _PopulationPolicyClass:
+    """Class decorator: catalogs `population_policy_cls` under its own
+    `(population_policy_id, version)`. Returns the class unchanged."""
+    _population_policies[
+        (population_policy_cls.population_policy_id, population_policy_cls.version)
+    ] = population_policy_cls
+    return population_policy_cls
+
+
 def get_adapter_class(plugin_id: str, version: str) -> _AdapterClass | None:
     return _adapters.get((plugin_id, version))
 
 
 def get_policy_class(plugin_id: str, version: str) -> _PolicyClass | None:
     return _policies.get((plugin_id, version))
+
+
+def get_population_policy_class(plugin_id: str, version: str) -> _PopulationPolicyClass | None:
+    return _population_policies.get((plugin_id, version))
 
 
 def known_adapter_keys() -> frozenset[tuple[str, str]]:
@@ -61,6 +84,10 @@ def known_adapter_keys() -> frozenset[tuple[str, str]]:
 
 def known_policy_keys() -> frozenset[tuple[str, str]]:
     return frozenset(_policies)
+
+
+def known_population_policy_keys() -> frozenset[tuple[str, str]]:
+    return frozenset(_population_policies)
 
 
 def unregister_adapter(adapter_id: str, version: str) -> None:
@@ -77,3 +104,7 @@ def unregister_adapter(adapter_id: str, version: str) -> None:
 
 def unregister_policy(policy_id: str, version: str) -> None:
     _policies.pop((policy_id, version), None)
+
+
+def unregister_population_policy(population_policy_id: str, version: str) -> None:
+    _population_policies.pop((population_policy_id, version), None)

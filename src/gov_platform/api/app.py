@@ -34,6 +34,13 @@ M5: two more repositories are constructed here (`PolicyBindingRepository`,
 construction time either, for the same reason every other repository here
 doesn't: they hold no connection, only an `Engine`/`Session` passed in per
 call.
+
+M6: two more repositories (`PopulationPolicyBindingRepository`,
+`PopulationFindingRepository`) and two more Admin API routers, same
+pattern. `population_engine/run_policies.py`'s batch job is not wired
+here at all — it is never invoked by this app, only ever run as a
+separate CLI process against the same database (see that module's
+docstring and `docs/milestones/M6.md` §4.1/§13.4).
 """
 
 from __future__ import annotations
@@ -46,6 +53,8 @@ from fastapi.responses import JSONResponse
 from gov_platform.api import health
 from gov_platform.api.admin import plugins as admin_plugins
 from gov_platform.api.admin import policy_bindings as admin_policy_bindings
+from gov_platform.api.admin import population_findings as admin_population_findings
+from gov_platform.api.admin import population_policy_bindings as admin_population_policy_bindings
 from gov_platform.api.admin import protected_attribute_rules as admin_protected_attribute_rules
 from gov_platform.api.admin import systems as admin_systems
 from gov_platform.api.ingestion.routes import build_ingestion_router
@@ -55,6 +64,10 @@ from gov_platform.audit.signing import load_signer
 from gov_platform.config.settings import Settings, get_settings
 from gov_platform.db.repositories.plugin_registration import PluginRegistrationRepository
 from gov_platform.db.repositories.policy_binding import PolicyBindingRepository
+from gov_platform.db.repositories.population_finding import PopulationFindingRepository
+from gov_platform.db.repositories.population_policy_binding import (
+    PopulationPolicyBindingRepository,
+)
 from gov_platform.db.repositories.protected_attribute_rule import ProtectedAttributeRuleRepository
 from gov_platform.db.repositories.shadow_finding import ShadowFindingRepository
 from gov_platform.db.repositories.system import SystemRepository
@@ -94,6 +107,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.shadow_finding_repository = ShadowFindingRepository()
     app.state.policy_binding_repository = PolicyBindingRepository()
     app.state.protected_attribute_rule_repository = ProtectedAttributeRuleRepository()
+    app.state.population_policy_binding_repository = PopulationPolicyBindingRepository()
+    app.state.population_finding_repository = PopulationFindingRepository()
 
     app.include_router(health.router)
     app.include_router(build_ingestion_router(), prefix="/v1/ingestion")
@@ -101,6 +116,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_plugins.router, prefix="/v1/admin")
     app.include_router(admin_policy_bindings.router, prefix="/v1/admin")
     app.include_router(admin_protected_attribute_rules.router, prefix="/v1/admin")
+    app.include_router(admin_population_policy_bindings.router, prefix="/v1/admin")
+    app.include_router(admin_population_findings.router, prefix="/v1/admin")
 
     @app.exception_handler(PluginTimeoutError)
     async def plugin_timeout_handler(request: Request, exc: PluginTimeoutError) -> JSONResponse:

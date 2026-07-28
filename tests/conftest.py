@@ -53,6 +53,14 @@ def _seed_plugin_registry() -> None:
     `EvidenceStore`'s resolution path now reads `protected_attribute_rules`,
     not `classification.py`'s static dict. Reuses `plugins.seed_registry`'s
     own functions rather than duplicating the seed data here.
+
+    M6: also seeds `adverse-impact-ratio` to `PRODUCTION` — every test
+    exercising `population_engine/run_policies.py` or the Population
+    Policy Bindings Admin API depends on that plugin's lifecycle state,
+    the same way ingestion tests already depend on the first-party
+    adapters/policies. No `PopulationPolicyBinding` is seeded here either
+    (see `plugins/seed_registry.py`'s module docstring) — tests that need
+    one create their own, against a system they control.
     """
     if POSTGRES_URL is None:
         return
@@ -65,7 +73,11 @@ def _seed_plugin_registry() -> None:
         ProtectedAttributeRuleRepository,
     )
     from gov_platform.plugins.bootstrap import bootstrap_plugins
-    from gov_platform.plugins.registry import known_adapter_keys, known_policy_keys
+    from gov_platform.plugins.registry import (
+        known_adapter_keys,
+        known_policy_keys,
+        known_population_policy_keys,
+    )
     from gov_platform.plugins.seed_registry import (
         seed_finance_protected_attribute_rules,
         seed_first_party_policy_bindings,
@@ -93,6 +105,14 @@ def _seed_plugin_registry() -> None:
                 session,
                 plugin_repository,
                 plugin_type=PluginType.POLICY,
+                plugin_id=plugin_id,
+                version=version,
+            )
+        for plugin_id, version in known_population_policy_keys():
+            seed_to_production(
+                session,
+                plugin_repository,
+                plugin_type=PluginType.POPULATION_POLICY,
                 plugin_id=plugin_id,
                 version=version,
             )
@@ -155,6 +175,67 @@ def make_decision_event() -> Any:
         return DecisionEvent(**defaults)
 
     return _make
+
+
+@pytest.fixture
+def seed_finance_decisions(db_engine: Engine) -> Any:
+    """M6: population tests need many real `decision_events` rows for one
+    system, with specific protected-attribute values and outcomes -- a
+    different shape of setup than `make_decision_event` (one in-memory
+    `DecisionEvent`) or `evidence_store` (one full governed append).
+    Writes directly via the repository layer, the same normalized rows
+    `EvidenceStore.append` would produce, without needing a real `Verdict`
+    for each one. Registers the System with `domain="FINANCE"` so
+    `protected_attribute_rules` resolves `DIRECT` attributes for it (see
+    `tests/integration/test_population_window_postgres.py`).
+
+    Returns a callable `(decisions) -> system_id`, where each decision is
+    `(protected_attribute_refs, approved, occurred_at)`.
+    """
+    from datetime import UTC
+    from datetime import datetime as _datetime
+    from uuid import uuid4 as _uuid4
+
+    from sqlalchemy.orm import Session
+
+    from gov_platform.db.repositories.decision_event import DecisionEventRepository
+    from gov_platform.db.repositories.model_version import ModelVersionRepository
+    from gov_platform.db.repositories.system import SystemRepository
+    from gov_platform.schemas.decision_event import DecisionEvent
+    from gov_platform.schemas.model_version import UNSPECIFIED_VERSION
+
+    def _seed(
+        decisions: list[tuple[dict[str, str], bool, datetime]], *, domain: str | None = "FINANCE"
+    ) -> str:
+        system_repository = SystemRepository()
+        model_version_repository = ModelVersionRepository()
+        decision_event_repository = DecisionEventRepository()
+
+        with Session(db_engine) as session:
+            system = system_repository.create(
+                session, name=f"population-test-system-{_uuid4()}", domain=domain
+            )
+            model_version = model_version_repository.get_or_create(
+                session, system_id=system.id, version=UNSPECIFIED_VERSION
+            )
+            for protected_attribute_refs, approved, occurred_at in decisions:
+                event = DecisionEvent(
+                    event_id=f"pop-evt-{_uuid4()}",
+                    system_id=system.name,
+                    decision_type="credit_decision",
+                    subject_ref=f"subj-{_uuid4()}",
+                    occurred_at=occurred_at,
+                    ingested_at=_datetime.now(UTC),
+                    input_features={"annual_income": 50000.0},
+                    protected_attribute_refs=protected_attribute_refs,
+                    decision_output={"approved": approved},
+                )
+                decision_event_repository.create(session, event, model_version_id=model_version.id)
+            session.commit()
+
+        return system.id
+
+    return _seed
 
 
 @pytest.fixture

@@ -18,6 +18,21 @@ is exactly what `Adapter.governing_policy_ids` (M3/M4) and
 `classification.py`'s static `_RULES_BY_DOMAIN` (M2) encoded in code —
 this is a pure storage-location migration, not a behavior change, so a
 fresh cutover reproduces M0-M4 behavior exactly.
+
+M6: also promotes `adverse-impact-ratio` to `PRODUCTION`, the same way
+every other first-party plugin is seeded. Deliberately does **not** seed
+any `PopulationPolicyBinding`: unlike `policy_bindings` (`adapter_id`-keyed
+— `adapter_id` is a fixed identity every registered `Adapter` class already
+has), `population_policy_bindings` is `system_id`-keyed, and no `System`
+row is guaranteed to exist yet at seed time — a fresh database has zero
+systems until something registers or auto-provisions one. Binding
+`adverse-impact-ratio` to a real system is a genuine operator decision
+("which system's decisions should this monitor"), not a fact this
+milestone's code already knows the way it knows which policies govern
+which adapter — left to `POST /v1/admin/population-policy-bindings` after
+a system exists, the same way `README.md`'s walkthrough already has an
+operator `POST /v1/admin/systems` before ingesting through the
+credit-scorecard route.
 """
 
 from __future__ import annotations
@@ -32,7 +47,11 @@ from gov_platform.db.repositories.policy_binding import PolicyBindingRepository
 from gov_platform.db.repositories.protected_attribute_rule import ProtectedAttributeRuleRepository
 from gov_platform.db.session import create_db_engine
 from gov_platform.plugins.bootstrap import bootstrap_plugins
-from gov_platform.plugins.registry import known_adapter_keys, known_policy_keys
+from gov_platform.plugins.registry import (
+    known_adapter_keys,
+    known_policy_keys,
+    known_population_policy_keys,
+)
 from gov_platform.protected_attributes.classification import FINANCE, FINANCE_DOMAIN
 from gov_platform.schemas.plugin_registration import PluginLifecycleState, PluginType
 from gov_platform.schemas.policy_binding import PolicySeverity
@@ -205,6 +224,16 @@ def main(argv: list[str] | None = None) -> int:
                 version=version,
             )
             for plugin_id, version in sorted(known_policy_keys())
+        ]
+        results += [
+            seed_to_production(
+                session,
+                plugin_repository,
+                plugin_type=PluginType.POPULATION_POLICY,
+                plugin_id=plugin_id,
+                version=version,
+            )
+            for plugin_id, version in sorted(known_population_policy_keys())
         ]
         results += seed_first_party_policy_bindings(session, policy_binding_repository)
         results += seed_finance_protected_attribute_rules(

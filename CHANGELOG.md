@@ -5,6 +5,42 @@ grouped by milestone (`ARCH-GOV-002` / `IMPL-GOV-001`), not by release date,
 since this project ships as a sequence of frozen, incremental milestones
 rather than continuous releases.
 
+## [0.7.0-m6] — 2026-07-28 — M6: Async Population-Policy Evaluation Plane & Adverse Impact Ratio
+
+Delivers the async evaluation plane population-level policies need — a
+CLI-invoked batch job that evaluates many `DecisionEvent`s for one
+`System` over one calendar-aligned window, entirely decoupled from, and
+with zero effect on, the two existing synchronous ingestion routes — plus
+one concrete population policy (adverse impact ratio, the EEOC "4/5ths
+rule"). Full design rationale, the fourteen-plus-two original design
+decisions, the hostile-review-pass corrections, and the production-
+readiness review: [`docs/milestones/M6.md`](docs/milestones/M6.md).
+
+### Added
+- `population_engine/base.py` — `PopulationPolicy`, a third plugin port alongside `Adapter`/`Policy`; `PopulationWindow` (pre-aggregated `PopulationGroupCount` rows, not raw `DecisionEvent`s); `PopulationGroupCount`.
+- `population_engine/window.py` — the "Event Lake" read path: builds a `PopulationWindow` from `decision_events`/`protected_attribute_refs` and the DB-backed `protected_attribute_rules`, under `REPEATABLE READ`. No new storage — a new windowed query over the existing normalized tables.
+- `population_engine/policies/adverse_impact_ratio.py` — `AdverseImpactRatioPolicy`, the one concrete population policy: flags a `DIRECT`-classified protected attribute's value when its favorable-outcome-rate ratio (against the highest-rate value for that attribute) falls under 0.8, among values with at least 30 decisions in the window.
+- `population_engine/run_policies.py` — `python -m gov_platform.population_engine.run_policies`, the batch CLI: for each active `PopulationPolicyBinding` with a `PRODUCTION` population policy, builds a fixed, calendar-aligned, closed-in-the-past window (default: yesterday's full UTC day; `--window-start`/`--window-end` override together), evaluates it under `run_sandboxed`, signs it, and persists it. One binding's failure is reported and does not abort the rest of the run.
+- `schemas/population_finding.py`, `schemas/population_policy_binding.py` — `PopulationFinding` (not `decision_event_id`-keyed — an aggregate result over many decisions), `PopulationFindingOutcome` (`CLEAR`/`FLAGGED`), `PopulationPolicyBinding` (`system_id`-keyed, not `adapter_id`-keyed), `PopulationPolicyBindingLifecycleState` (`ACTIVE`/`INACTIVE`).
+- `db/repositories/population_finding.py`, `db/repositories/population_policy_binding.py`; `api/admin/population_findings.py` (`list`/`get`, read-only — a population finding is only ever produced by the batch job) and `api/admin/population_policy_bindings.py` (`create`/`list`/`get`/`activate`/`deactivate`). Migrations `0014`–`0016`.
+- `audit/verify_population_findings.py` — `population_finding_hash` (a plain content hash, not `hash_chain`'s chained variant — population findings aren't chained, see §13.5) and a standalone verification CLI, shipped alongside signing rather than deferred (signing with no verifier would be exactly the "infrastructure with zero callers" pattern this milestone's own read API argued against).
+- `PluginType.POPULATION_POLICY` — a `PopulationPolicy` registers/promotes through the exact same `plugin_registrations` lifecycle every `Adapter`/`Policy` already uses; no second lifecycle mechanism.
+- `PopulationFinding.classification_snapshot` — every finding embeds exactly which `protected_attribute_rules` classifications it was computed against, independent of later edits to that (live, admin-mutable) table. The reproducibility fix from this milestone's hostile-review pass (§13.16): without it, a historical finding would silently drift with whatever the ruleset says today, rather than reproducing what was originally reported.
+
+### Changed
+- Nothing. `POST /v1/ingestion/events`, `POST /v1/ingestion/events/credit-scorecard`, `Adapter`, `Policy`, `GovernanceEngine`, and `EvidenceStore.append` are byte-for-byte unchanged — the async plane this milestone builds is additive and parallel, not a redesign of per-event ingestion (see §13.1's central, highest-stakes call).
+- `plugins/seed_registry.py` — also seeds `adverse-impact-ratio` to `PRODUCTION`. Deliberately does **not** seed a `PopulationPolicyBinding`: unlike `adapter_id` (a fixed identity every registered `Adapter` already has), `population_policy_bindings.system_id` requires a real `System` row nothing guarantees exists at seed time — binding the policy to a real system is a genuine operator decision, left to `POST /v1/admin/population-policy-bindings`.
+
+### Fixed
+_(found during this milestone's own hostile-review and production-readiness passes, before freeze)_
+- The original design draft had `population_engine/window.py` resolving attribute values from `protected_attribute_resolutions`, which only ever holds *classification* (`DIRECT`/`PROXIED`/`WITHHELD`), never the attribute's actual value — adverse impact ratio groups decisions *by value*. Fixed before implementation: values now come from `decision_events.protected_attribute_refs` directly.
+- The original draft proposed no locking and left window semantics (`window_start`/`window_end` selection) completely unspecified — a rolling, `now()`-relative window would have made the `UNIQUE` constraint meaningless and produced redundant/racy findings under any repeated invocation. Fixed before implementation: fixed, calendar-aligned, closed-in-the-past windows; `REPEATABLE READ` for window-building reads; `UNIQUE (population_policy_id, system_id, window_start, window_end)`.
+- The original draft proposed ordinary (mutable) database privileges for `population_findings` and no verifier for its signatures. Fixed before implementation: `population_findings` is append-only (`REVOKE UPDATE, DELETE`, migration `0015`) and `audit/verify_population_findings.py` ships alongside signing.
+- `policy_engine/__init__.py`'s module docstring still named population-level policies as future M6/M8 work after this milestone delivered them (for the concrete-policy half; the framework half is still M8) — updated to the real, current state. The same class of finding M4's and M5's own reviews each caught in a handful of other files.
+
+### Deferred
+Three new migrations (`0014`–`0016`): two new tables (`population_policy_bindings`, `population_findings`) and one new index (`decision_events(model_version_id, occurred_at)`, required for the one new windowed-read access pattern this milestone introduces) — no existing table altered. A general, pluggable Evaluation Framework (M8; this milestone ships one concrete metric, not the framework); real scheduling of the batch job (cron/`CronJob`, deployment-topology scope, M13-adjacent); a dedicated analytical store for the "Event Lake" (the existing operational tables are reused, not duplicated); severity/escalation for population findings (stay purely informational — there is still no Human Review Workflow, M9, for *any* escalated output to go to); redesigning per-event ingestion into a queued/polled contract (explicitly declined, §13.1); recomputing a historical window under today's rules (a distinct "what-if" capability, not built); authentication on any endpoint, including this milestone's two new admin surfaces (still `M5+/M13`, flagged more sharply than at any prior milestone — see `docs/milestones/M6.md` §13.14). Human Review Workflow (M9), Compliance Dashboard (M10), encryption at rest (M11).
+
 ## [0.6.0-m5] — 2026-07-27 — M5: Policy Bindings, Verdict Escalation & Evidence Signing
 
 Replaces the static, code-defined `Adapter.governing_policy_ids` with a

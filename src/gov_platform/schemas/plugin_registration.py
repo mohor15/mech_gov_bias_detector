@@ -6,6 +6,12 @@ run, and at what lifecycle stage — separate from the in-process
 `plugins.registry`, which records *what implementations this process's
 own code knows how to run at all*. See `plugins/registry.py`'s module
 docstring for the full split.
+
+M6: `PluginType` gains `POPULATION_POLICY` — a `PopulationPolicy`
+(`population_engine/base.py`) registers, promotes, and is looked up
+through this exact same table and lifecycle mechanism every `Adapter`/
+`Policy` already uses. See `docs/milestones/M6.md` §13.7: no second
+lifecycle mechanism was invented for the third plugin kind.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class PluginType(StrEnum):
     ADAPTER = "ADAPTER"
     POLICY = "POLICY"
+    POPULATION_POLICY = "POPULATION_POLICY"
 
 
 class PluginLifecycleState(StrEnum):

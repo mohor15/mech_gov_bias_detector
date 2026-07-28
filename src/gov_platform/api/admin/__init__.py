@@ -17,4 +17,14 @@ already-deployed `Adapter`/`Policy` implementations, the same boundary the
 plugin registry draws. Domain/jurisdiction-*keyed* bindings (a richer
 binding than adapter-keyed) remain deferred — see
 `docs/milestones/M5.md` §13.1.
+
+M6 adds two more: Population Policy Bindings
+(`population_policy_bindings.py` — which `PopulationPolicy` evaluates
+which `System`, `system_id`-keyed, not `adapter_id`-keyed — see
+`docs/milestones/M6.md` §13.8) and Population Findings
+(`population_findings.py` — read-only, `list`/`get` only; a population
+finding is only ever produced by `population_engine/run_policies.py`'s
+batch job, never through this API). Still no authentication anywhere,
+including these — see `docs/milestones/M6.md` §13.14 for why this gap is
+flagged more sharply at M6 than at any prior milestone.
 """
