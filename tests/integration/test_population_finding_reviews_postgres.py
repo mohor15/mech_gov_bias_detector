@@ -49,7 +49,10 @@ def _new_population_finding_id(db_engine, *, outcome: PopulationFindingOutcome) 
             metric_values={"race:Black": 0.75},
             classification_snapshot={"race": "DIRECT"},
             rationale="test rationale",
-            evaluated_at=datetime(2026, 1, 2, tzinfo=UTC),
+            # A unique evaluated_at -- see
+            # test_admin_population_finding_reviews_api.py's identical
+            # comment for why a shared, fixed timestamp is unsafe here.
+            evaluated_at=datetime.now(UTC),
         )
         PopulationFindingRepository().create(
             session, finding, signature="deadbeef", signing_key_id="default"

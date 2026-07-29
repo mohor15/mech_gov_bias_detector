@@ -89,7 +89,10 @@ def _seed_pre_m9_population_finding(db_engine) -> str:
             metric_values={"race:Black": 0.75},
             classification_snapshot={"race": "DIRECT"},
             rationale="test rationale",
-            evaluated_at=datetime(2026, 1, 2, tzinfo=UTC),
+            # A unique evaluated_at -- see
+            # test_admin_population_finding_reviews_api.py's identical
+            # comment for why a shared, fixed timestamp is unsafe here.
+            evaluated_at=datetime.now(UTC),
         )
         PopulationFindingRepository().create(
             session, finding, signature="deadbeef", signing_key_id="default"
@@ -164,7 +167,7 @@ def test_reconcile_does_not_queue_a_clear_population_finding(postgres_url, db_en
             metric_values={},
             classification_snapshot={},
             rationale="test rationale",
-            evaluated_at=datetime(2026, 1, 2, tzinfo=UTC),
+            evaluated_at=datetime.now(UTC),
         )
         PopulationFindingRepository().create(
             session, finding, signature="deadbeef", signing_key_id="default"

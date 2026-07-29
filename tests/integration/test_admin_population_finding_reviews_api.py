@@ -46,7 +46,18 @@ def _seed_review(db_engine) -> tuple[str, str]:
             metric_values={"race:Black": 0.75},
             classification_snapshot={"race": "DIRECT"},
             rationale="test rationale",
-            evaluated_at=datetime(2026, 1, 2, tzinfo=UTC),
+            # A unique `evaluated_at`, not the fixed `datetime(2026, 1, 2)`
+            # several sibling files also use for unrelated seed data --
+            # `population_findings` is shared and never truncated across the
+            # whole test session, and `PopulationFindingRepository.list_all`
+            # orders by `evaluated_at` alone (no secondary tiebreaker), so
+            # many rows sharing one exact timestamp make that order
+            # effectively arbitrary among them. Found via CI: this
+            # collision is what let one of this file's own "deadbeef"
+            # (non-cryptographic) signatures sort ahead of
+            # `test_verify_population_findings_postgres.py`'s own,
+            # genuinely-signed record.
+            evaluated_at=datetime.now(UTC),
         )
         PopulationFindingRepository().create(
             session, finding, signature="deadbeef", signing_key_id="default"

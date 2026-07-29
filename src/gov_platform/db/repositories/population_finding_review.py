@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
@@ -45,10 +45,14 @@ class PopulationFindingReviewRepository:
             )
             .on_conflict_do_nothing(
                 index_elements=[PopulationFindingReviewRow.population_finding_id],
-                index_where=(
-                    PopulationFindingReviewRow.status
-                    != PopulationFindingReviewStatus.RESOLVED.value
-                ),
+                # A literal SQL predicate -- see
+                # `VerdictReviewRepository.create`'s identical fix and its
+                # comment for the full reasoning (a bound-parameter predicate
+                # is invisible to Postgres's ON CONFLICT arbiter match once a
+                # cached/generic query plan is used, which a tight loop over
+                # many rows on one pooled connection -- e.g.
+                # `human_review/backfill_reviews.py` -- reliably triggers).
+                index_where=text(f"status != '{PopulationFindingReviewStatus.RESOLVED.value}'"),
             )
             .returning(PopulationFindingReviewRow.id)
         )

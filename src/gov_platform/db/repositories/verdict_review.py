@@ -31,7 +31,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
@@ -64,7 +64,23 @@ class VerdictReviewRepository:
             )
             .on_conflict_do_nothing(
                 index_elements=[VerdictReviewRow.verdict_id],
-                index_where=VerdictReviewRow.status != VerdictReviewStatus.RESOLVED.value,
+                # A literal SQL predicate, not `VerdictReviewRow.status !=
+                # VerdictReviewStatus.RESOLVED.value` (a column-vs-Python-value
+                # comparison, which SQLAlchemy binds as a parameter). Postgres's
+                # ON CONFLICT arbiter must match this predicate against
+                # migration 0023's partial index at plan time -- a bound
+                # parameter is invisible to that match under a cached/generic
+                # plan (which Postgres and psycopg3 both switch to after
+                # roughly five executions of "the same" statement on one
+                # connection -- exactly what a tight loop over many rows on
+                # one pooled connection triggers, e.g.
+                # human_review/backfill_reviews.py), raising "there is no
+                # unique or exclusion constraint matching the ON CONFLICT
+                # specification" -- found via CI, not locally (no Postgres
+                # available in the implementing sandbox to exercise this
+                # loop). A literal is part of the statement text itself, so
+                # the arbiter match holds under any plan.
+                index_where=text(f"status != '{VerdictReviewStatus.RESOLVED.value}'"),
             )
             .returning(VerdictReviewRow.id)
         )
