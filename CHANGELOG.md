@@ -5,6 +5,43 @@ grouped by milestone (`ARCH-GOV-002` / `IMPL-GOV-001`), not by release date,
 since this project ships as a sequence of frozen, incremental milestones
 rather than continuous releases.
 
+## [0.11.0-m10] — 2026-07-29 — M10: Compliance Dashboard
+
+Delivers architecture §11 ("Compliance Dashboard"): a small set of
+read-only HTML views rendering data M6/M7/M9 already compute and already
+expose via JSON — system/governance health, population findings, and the
+Human Review Workflow queue. Static HTML/CSS/vanilla JavaScript, served
+from the existing FastAPI app, fetching the same JSON endpoints every
+other client already uses. **Zero new endpoints, zero new database
+tables, zero new external dependencies.** The first milestone whose
+entire job is presentation, not computation, and the first UI this
+platform has ever built. Full design rationale, this milestone's own
+hostile-review record (three findings severe enough to reverse the
+original design, two folded in as amendments, two new ambiguities
+discovered), and the post-implementation production-readiness review:
+[`docs/milestones/M10.md`](docs/milestones/M10.md).
+
+### Added
+- `api/dashboard.py` — a plain `APIRouter` registered with `prefix="/dashboard"`, serving the identical static shell HTML at `GET /dashboard`, `GET /dashboard/population-findings`, and `GET /dashboard/reviews`; the client-side JavaScript, not this router, decides what to render based on the current path. `register_dashboard(app)` mounts the static assets and includes the router in one call, designed to be invoked inside a `try`/`except` (see Fixed below).
+- `api/dashboard_static/index.html`, `dashboard.css`, `dashboard.js` — the dashboard's entire client: three views (Overview, Population Findings, Review Queue), each populated by plain `fetch()` calls against `GET /v1/admin/metrics`, `GET /readyz`, `GET /v1/admin/population-findings`, `GET /v1/admin/systems`, `GET /v1/admin/verdict-reviews`, and `GET /v1/admin/population-finding-reviews` — no new endpoint, no changed response shape. Every rendered value is inserted via `textContent`, never `innerHTML` concatenation, with no field-specific exception list. Every view renders a visible, honest error state on a failed or non-2xx `fetch()`, never a silent blank page.
+- `[tool.setuptools.package-data]` in `pyproject.toml` — declares `dashboard_static/*.html`/`*.css`/`*.js` as real package data, verified directly (via `setuptools`' own `build_py` command, not merely assumed) to be included in a real, non-editable install — the exact path `infra/docker/Dockerfile`'s `pip install .` and CI's `docker-smoke` job exercise.
+- `tests/unit/api/test_dashboard.py` — route/content-type coverage, a regression guard against `innerHTML` assignment, a direct proof the dashboard needs no live database at construction time, a simulated packaging-failure test proving containment (`/healthz` still works, the dashboard routes 404, no exception propagates), and an automated re-run of the `build_py` packaging verification above.
+
+### Changed
+- `api/app.py` — `register_dashboard(app)` is called inside its own `try`/`except Exception`, logging loudly on failure — the one router registration in this composition root that isn't a bare, unguarded call, and deliberately so (see Fixed below).
+
+### Fixed
+- **Implementation-time**: `GET /dashboard` 307-redirected to `/dashboard/` instead of returning `200` directly. Literally following §8.7's own recommended pattern (`prefix="/dashboard"` plus a relative `@router.get("/")` decorator for the index route) registers the exact path `/dashboard/`, not `/dashboard` — a bare request to the latter needs Starlette's default slash-redirect to reach it. Silently broke README's own documented `curl http://127.0.0.1:8000/dashboard` example (no `-L`, so it would print nothing) and wasn't caught by the initial test suite because `TestClient`'s default `follow_redirects=True` transparently follows the extra hop. Found by exercising the real app with `uvicorn` and `curl` directly, not just the test suite. Fixed: `@router.get("/")` → `@router.get("")` for the index route only; pinned down by a new regression test (`test_overview_route_matches_exactly_without_a_redirect`) using a `follow_redirects=False` client. See `docs/milestones/M10.md` §10 for the full report.
+
+_(the remainder found and corrected during this milestone's own hostile-review pass, before implementation began — see `docs/milestones/M10.md`'s "Revision note" for the full record)_
+- The first design draft described a dashboard packaging mistake as "the dashboard... silently 404s." Verified directly against Starlette's own source: `StaticFiles(check_dir=True)` (its default) raises `RuntimeError` at *construction* time, inside `create_app()` itself, if its directory is missing — exactly what a real, non-editable install missing `package_data` produces. Left unguarded, that would have prevented `create_app()` from ever returning an application object at all, taking `/healthz` down with it. Fixed before implementation: the dashboard's `StaticFiles` mount and router registration are constructed inside their own `try`/`except` in `create_app()`, mirroring the "a failure in this non-essential subsystem must never take down what matters more" precedent M9 already established for `_queue_verdict_review`.
+- The first design draft proposed a brand-new top-level package (`gov_platform/dashboard/static/`) for the static assets while putting the router itself in the existing `api/` package — inconsistent with this project's own "a new top-level package only when nothing existing is a natural home" precedent (M9's `human_review/`). Fixed before implementation: static assets moved to `api/dashboard_static/`, alongside the router that serves them.
+- The first design draft named exactly three fields (`rationale`, `resolution_notes`, `reviewer`) as requiring safe DOM insertion. Found to be actively misleading, not merely incomplete: `System.name` is a concrete counter-example the list missed entirely — no character/length restriction beyond `min_length=1`, auto-provisioned directly from the *public*, unauthenticated ingestion endpoint's `system_id`/`source_system` fields. Fixed before implementation: the guidance is now a blanket rule — every string value from any API response is inserted via `textContent`, unconditionally, no exception list.
+- Client-side fetch-failure handling was entirely absent from the first design draft. Fixed before implementation: every view now renders a visible, honest error state on a failed or non-2xx `fetch()` — most important exactly when the underlying database is unhealthy, the same moment the Overview page's own data is least likely to be available.
+
+### Deferred
+No new migration, no new table, no new JSON endpoint. Interactive claim/release/resolve actions from the dashboard itself (read-only for this milestone, `docs/milestones/M10.md` §8.1); a combined "dashboard summary" endpoint (considered and declined — three to four `fetch()` calls is not a real performance problem today); pagination on the endpoints the dashboard depends on (a real, pre-existing gap, confirmed out of M10's own additive scope, its real-scale consequence — a browser-tab freeze, not a mild inconvenience — named more plainly than the first draft did); real-time push/auto-refresh; periodic report generation/export (M12); encryption at rest and retention (M11); a general "list all Verdicts"/"list all Findings" view (M9's own declined scope); accessibility/mobile-responsiveness auditing; browser-automation test coverage (Selenium/Playwright, declined); authentication anywhere in this platform (still M13, now an eighth-consecutive-milestone gap); multi-tenancy/multi-plane deployment/mTLS (M13).
+
 ## [0.10.0-m9] — 2026-07-29 — M9: Human Review Workflow
 
 Delivers architecture §12 ("Human Review Workflow"): the queue that

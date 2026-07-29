@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gov-platform"
-version = "0.10.0"
-description = "Domain-agnostic AI Governance Platform (V2) — M9: Human Review Workflow for escalated verdicts and flagged population findings."
+version = "0.11.0"
+description = "Domain-agnostic AI Governance Platform (V2) — M10: Compliance Dashboard rendering system/governance health, population findings, and the human review queue."
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [
@@ -30,6 +30,17 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# M10: dashboard_static/'s HTML/CSS/JS are not .py files, so
+# packages.find's discovery above never picks them up -- without this
+# declaration they'd be present in an editable (`pip install -e .`) dev
+# install (served straight off the source tree) and silently missing from
+# a real, non-editable install (`infra/docker/Dockerfile`'s
+# `pip install .`), the exact packaging risk docs/milestones/M10.md
+# §4.4 names. Verified directly against a real, non-editable install --
+# see tests/unit/api/test_dashboard.py.
+"gov_platform.api" = ["dashboard_static/*.html", "dashboard_static/*.css", "dashboard_static/*.js"]
 
 [tool.ruff]
 line-length = 100

@@ -62,6 +62,21 @@ instance would be equally correct, but passing two keeps `EvidenceStore`'s
 own construction self-contained, the same way it already builds its own
 `ProtectedAttributeResolver`/`EvidenceSigner` rather than reading them off
 `app.state`).
+
+M10: `api.dashboard.register_dashboard` mounts the Compliance Dashboard's
+static assets and registers its router — no repository, no `app.state`
+entry, no database dependency at all (it's a purely presentational,
+read-only surface reading through the JSON endpoints above, not through
+this factory). Deliberately called inside its own `try`/`except`, unlike
+every other router registration in this function: `StaticFiles` raises
+`RuntimeError` at *construction* time if its directory is missing, which
+is exactly what a real, non-editable install missing `package_data`
+declarations produces. Left unguarded, that packaging defect would
+prevent this function from ever returning an application object at all,
+taking `/healthz` down with it — see `docs/milestones/M10.md` §4.3/§4.4/
+§8.6 and `api/dashboard.py`'s own docstring for the full reasoning. A
+dashboard packaging failure must degrade to "no dashboard," never "no
+application."
 """
 
 from __future__ import annotations
@@ -81,6 +96,7 @@ from gov_platform.api.admin import population_policy_bindings as admin_populatio
 from gov_platform.api.admin import protected_attribute_rules as admin_protected_attribute_rules
 from gov_platform.api.admin import systems as admin_systems
 from gov_platform.api.admin import verdict_reviews as admin_verdict_reviews
+from gov_platform.api.dashboard import register_dashboard
 from gov_platform.api.ingestion.routes import build_ingestion_router
 from gov_platform.api.middleware import MaxBodySizeMiddleware
 from gov_platform.audit.evidence_store import EvidenceStore
@@ -157,6 +173,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_metrics.router, prefix="/v1/admin")
     app.include_router(admin_verdict_reviews.router, prefix="/v1/admin")
     app.include_router(admin_population_finding_reviews.router, prefix="/v1/admin")
+
+    try:
+        register_dashboard(app)
+    except Exception:
+        # M10 production-readiness requirement (docs/milestones/M10.md
+        # §4.3/§8.6): a dashboard packaging/construction failure must
+        # never prevent the rest of this factory from returning a working
+        # application. Logged loudly rather than silently swallowed --
+        # the dashboard is simply unavailable, everything else proceeds.
+        logger.exception("dashboard_registration_failed")
 
     @app.exception_handler(PluginTimeoutError)
     async def plugin_timeout_handler(request: Request, exc: PluginTimeoutError) -> JSONResponse:

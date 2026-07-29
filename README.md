@@ -1,37 +1,38 @@
-# AI Governance Platform — M9: Human Review Workflow
+# AI Governance Platform — M10: Compliance Dashboard
 
 A domain-agnostic observation-and-evaluation layer for LLM copilots, classical
 ML models, rule engines, and hybrid decision systems. This repository
 implements the frozen V2 architecture (`ARCH-GOV-002`) incrementally, per the
 frozen implementation plan (`IMPL-GOV-001`).
 
-**Current milestone: M9.** Delivers architecture §12 ("Human Review
-Workflow"): the queue that finally gives an `ESCALATE_FOR_REVIEW`/
-`RECOMMEND_HOLD` `GovernanceVerdict` (M5) and a `FLAGGED`
-`PopulationFinding` (M6/M8) somewhere to go — both were fully computed,
-persisted, and (as of M7) countable, but acted on by nobody until now. Two
-new tables (`verdict_reviews`, `population_finding_reviews`), each a
-reopenable `OPEN → IN_REVIEW → RESOLVED` workflow record with a real
-foreign key to exactly one already-persisted `Verdict`/`PopulationFinding`
-— created automatically, in a **separate** transaction from the write it
-depends on, so a bug in this new, non-essential code can never block the
-recording of a real governance decision. **No new plugin port, no UI, no
-notification mechanism, no reviewer authentication** — see
+**Current milestone: M10.** Delivers architecture §11 ("Compliance
+Dashboard"): a small set of read-only HTML views rendering data M6/M7/M9
+already compute and already expose via JSON — system/governance health, the
+population-findings table, and the Human Review Workflow queue — for a
+human to actually look at, rather than only reachable via `curl`. Static
+HTML/CSS/vanilla JavaScript, served from the existing FastAPI app, fetching
+the same JSON endpoints every other client already uses. **Zero new
+endpoints, zero new database tables, zero new external dependencies** — no
+SPA framework, no build tooling, no server-side templating engine, no new
+plugin port. This is the first milestone whose entire job is presentation,
+not computation, and the first UI this platform has ever built — see
 [`docs/architecture-mapping.md`](docs/architecture-mapping.md) for exactly
 what each module does and does not yet do, and
-[`docs/milestones/M9.md`](docs/milestones/M9.md) for the full design
-review, its own two-pass hostile-review record (findings, corrections,
-final approval, and freeze), and production-readiness report.
+[`docs/milestones/M10.md`](docs/milestones/M10.md) for the full design
+review, its own hostile-review record (findings, corrections, final
+approval, and freeze), and production-readiness report.
 
 > **Do not point this milestone at real applicant/subject data.** The
 > Evidence Store (and `protected_attribute_resolutions`) has no encryption
 > at rest and no retention controls yet (M11), and there is still no auth in
-> front of any endpoint — including the M7 metrics endpoint, the M8
-> population-policy-bindings endpoint, and the ten new M9 Human Review
-> Workflow endpoints below, the first in this platform where an
-> unauthenticated caller can fabricate a specific, named person's
-> professional judgment about a real bias finding — a platform-wide gap no
-> milestone has closed yet (M13). Synthetic data only.
+> front of any endpoint — including the ten M9 Human Review Workflow
+> endpoints and the dashboard below. M10 does not increase the platform's
+> *technical* exposure (the JSON was already reachable via `curl`), but it
+> does remove the last remaining friction between "data is technically
+> reachable" and "data is immediately, legibly visible to a casual visitor
+> in a browser, with no login screen at all" — the single most
+> consequential production-readiness fact this milestone has to report.
+> Still M13. Synthetic data only.
 
 Version 1 (a single-domain prototype, superseded by this design) is preserved,
 unmodified, in [`legacy_v1/`](legacy_v1/) for reference.
@@ -373,6 +374,32 @@ python -m gov_platform.human_review.backfill_reviews --database-url "$GOV_PLATFO
 # population_finding_reviews created: 1
 ```
 
+**Compliance Dashboard (M10)** — three read-only pages, same origin as
+every JSON endpoint above, no separate process or build step to run:
+
+```
+http://127.0.0.1:8000/dashboard                        Overview: system/governance health + readiness
+http://127.0.0.1:8000/dashboard/population-findings    Population findings, filterable by system
+http://127.0.0.1:8000/dashboard/reviews                Verdict reviews + population-finding reviews,
+                                                        filterable by status/severity
+```
+
+Open any of the three in a browser — there is nothing to `curl` here beyond
+confirming the shell HTML/static assets are served:
+
+```bash
+curl http://127.0.0.1:8000/dashboard
+curl http://127.0.0.1:8000/dashboard/static/dashboard.css
+curl http://127.0.0.1:8000/dashboard/static/dashboard.js
+```
+
+Read-only for this milestone — no claim/release/resolve actions from the
+page itself (`docs/milestones/M10.md` §8.1); use the M9 Admin API endpoints
+above for that. A dashboard packaging defect (a non-editable install
+missing the static assets) degrades to "no dashboard," never "no
+application" — see `docs/milestones/M10.md` §4.3/§8.6 and `api/dashboard.py`
+for how.
+
 ## Run with Docker
 
 ```bash
@@ -465,6 +492,11 @@ src/gov_platform/
     middleware.py      MaxBodySizeMiddleware
     health.py          GET /healthz (liveness only, unchanged since M0)
     readiness.py       GET /readyz (real DB-connectivity check, M7 -- additive, not a redefinition)
+    dashboard.py       GET /dashboard, /dashboard/population-findings, /dashboard/reviews (M10 --
+                       serves the static shell only; register_dashboard() is called from app.py
+                       inside a try/except so a packaging defect can't take down the whole app)
+    dashboard_static/  index.html, dashboard.css, dashboard.js (M10 -- vanilla JS, fetch()
+                       against the JSON endpoints below, no build step, no framework)
     ingestion/         Registry-generated: one route per registered adapter (unchanged since M5)
     admin/             systems, plugins (register/list/get/promote), policy-bindings
                        (create/list/get/activate/deactivate), protected-attribute-rules
@@ -481,58 +513,37 @@ tests/integration/     Full HTTP/DB round-trip tests; most need @requires_postgr
 legacy_v1/             Superseded V1 prototype (reference only, not run)
 ```
 
-## What M9 deliberately does not include
+## What M10 deliberately does not include
 
 Every module has a docstring stating precisely which milestone owns the
-capability it doesn't yet have. The short version: any UI/dashboard (M10's
-Compliance Dashboard — this platform has never built one), a notification
-or paging mechanism for a newly `OPEN` review (the queue is pull-only;
-the list endpoint's oldest-open-first default ordering is the one
-in-scope, essentially-free mitigation), real authentication on the ten
-new endpoints or anywhere else (still M13, now a sixth-consecutive-
-milestone gap, sharpened here more than ever — see the warning above and
-`docs/milestones/M9.md` §7), reviewer identity/roles/RBAC (meaningless
-before real auth exists), signing or chaining a review's resolution into
-the tamper-evident audit trail (a genuine value judgment, decided:
-deferred to a future milestone — `docs/milestones/M9.md` §9.2), an
-explicit "reopen" Admin API endpoint (the schema no longer *forecloses*
-a second review once the first is resolved, but nothing yet exposes a
-code path that creates one on request), a generic "list all Verdicts"
-endpoint unscoped to review status, review-queue-depth metrics on
-`GET /v1/admin/metrics` (declined, directly on M8's own precedent of not
-reopening M7's frozen module for unrelated new state), SLA/timeout
-auto-escalation, bulk claim/resolve, cross-verdict/cross-finding
-aggregation of the review queue (each stays independent and parallel,
-the same "structurally separate, never combined" relationship this
-project has applied at every prior juncture), real metrics infrastructure
-(Prometheus/OpenTelemetry — M7's own deferral, unchanged), a dedicated
-analytical store for the "Event Lake" (M6), domain/jurisdiction-keyed
-Policy Bindings (M5's own deferral), signing-key rotation and KMS/HSM
-custody (M5), real OS-level plugin isolation beyond the timeout/exception
-sandbox (no milestone named yet), encryption at rest and retention (M11),
-and comprehensive request-abuse protection beyond the `Content-Length`
-check added during M0's finalization (M13). Building any of that now
-would violate the milestone's own scope.
+capability it doesn't yet have. The short version: any new backend
+computation (M10 renders what M0–M9 already computed — no new metric, no
+new population policy, no new review-workflow state), interactive
+claim/release/resolve actions from the dashboard itself (read-only for
+this milestone — `docs/milestones/M10.md` §8.1), a combined "dashboard
+summary" endpoint (three to four `fetch()` calls on a low-traffic internal
+tool is not a real performance problem today — §5), pagination on the
+endpoints the dashboard depends on (a real, pre-existing gap, confirmed
+out of M10's own additive scope — §7/§8.3), real-time push/auto-refresh/
+WebSockets (pull-only, matching M7/M9's identical restraint for their own
+surfaces), periodic report generation or export/download (M12 — a
+different cadence and audience, deliberately not blurred into this
+on-demand, interactive milestone), encryption at rest and retention (M11),
+a general "list all Verdicts"/"list all Findings" endpoint or view (M9's
+own declined scope, not reopened here), accessibility/mobile-responsiveness
+auditing (no milestone has named either as a requirement yet), browser-
+automation test coverage (Selenium/Playwright — declined; server-side
+route/static-asset tests instead, with the client-side JavaScript's own
+rendering correctness verified manually and named as an accepted gap —
+§8.5), real authentication on the dashboard or anywhere else (still M13,
+the eighth-consecutive-milestone gap, and — per the warning above — the
+first one concerning a human-readable web page rather than a JSON API),
+and multi-tenancy/multi-plane deployment/mTLS (M13, unchanged).
 
-Two genuinely pre-existing defects were found (not introduced) during
-this milestone's own two-pass hostile review, as a byproduct of designing
-its own foreign keys and concurrency model — neither is fixed inside M9,
-both are documented as verified, outstanding candidates for a dedicated
-follow-up (`docs/milestones/M9.md` §9.5/§9.6): `verdicts`/`findings`/
-`decision_events`/`model_versions`/`systems`/`verdict_findings` lack the
-`REVOKE UPDATE, DELETE` database-privilege lockdown `evidence_chain`/
-`population_findings` have (true since M1/M5, never named until M9 added
-the first real foreign key pointing at `verdicts`); and
-`PopulationPolicyBindingRepository.set_lifecycle_state` (and
-`PolicyBindingRepository`'s identical twin) use a read-then-write pattern
-with no conditional-update protection against a concurrent lifecycle
-transition, found only because M9's own `claim`/`release`/`resolve`
-needed a materially stronger pattern.
+## What remains after M10
 
-## What remains after M9
-
-See [`docs/milestones/M9.md`](docs/milestones/M9.md) for the full design
-review, its own two-pass hostile-review record, and production-readiness
-report. In short: M10 is the Compliance Dashboard that would actually
-render review-queue data (and everything else this platform computes) for
-a human to look at.
+See [`docs/milestones/M10.md`](docs/milestones/M10.md) for the full design
+review, its own hostile-review record, and production-readiness report. In
+short: M11 is encryption at rest and retention tiers; M12 is periodic
+report generation; M13 is authentication, multi-tenancy, and the several
+other cross-cutting gaps every milestone since M2 has named and left open.
