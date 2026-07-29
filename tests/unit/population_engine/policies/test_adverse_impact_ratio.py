@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from gov_platform.population_engine.base import PopulationGroupCount, PopulationWindow
 from gov_platform.population_engine.policies.adverse_impact_ratio import AdverseImpactRatioPolicy
 from gov_platform.schemas.population_finding import PopulationFindingOutcome
@@ -22,6 +24,7 @@ _DEFAULT_SNAPSHOT = {"race": "DIRECT"}
 def _window(
     group_counts: list[PopulationGroupCount],
     classification_snapshot: dict[str, str] = _DEFAULT_SNAPSHOT,
+    parameters: dict[str, float] | None = None,
 ) -> PopulationWindow:
     return PopulationWindow(
         system_id="sys-001",
@@ -29,6 +32,7 @@ def _window(
         window_end=_WINDOW_END,
         group_counts=group_counts,
         classification_snapshot=classification_snapshot,
+        parameters=parameters or {},
     )
 
 
@@ -175,3 +179,107 @@ def test_finding_identity_matches_the_policy_and_window() -> None:
     assert finding.system_id == "sys-001"
     assert finding.window_start == _WINDOW_START
     assert finding.window_end == _WINDOW_END
+
+
+# --- M8: admin-configurable parameters (docs/milestones/M8.md §4.3/§4.7) ---
+
+
+def test_no_parameters_override_produces_the_exact_pre_m8_defaults_in_parameters_used() -> None:
+    """Regression proof for §13.7: a binding with no `parameters` produces
+    byte-identical behavior to before M8, and `parameters_used` reports
+    the built-in defaults, not an empty dict."""
+    window = _window(
+        [
+            _group("race", "Black", total=40, favorable=30),  # rate 0.75
+            _group("race", "White", total=40, favorable=40),
+        ]
+    )
+
+    finding = AdverseImpactRatioPolicy().evaluate(window)
+
+    assert finding.outcome is PopulationFindingOutcome.FLAGGED
+    assert finding.parameters_used == {"threshold": 0.8, "minimum_group_size": 30.0}
+
+
+def test_a_valid_threshold_override_changes_the_outcome() -> None:
+    window = _window(
+        [
+            _group("race", "Black", total=40, favorable=30),  # rate 0.75
+            _group("race", "White", total=40, favorable=40),
+        ],
+        parameters={"threshold": 0.7},
+    )
+
+    finding = AdverseImpactRatioPolicy().evaluate(window)
+
+    assert finding.outcome is PopulationFindingOutcome.CLEAR
+    assert finding.parameters_used["threshold"] == 0.7
+
+
+def test_a_valid_minimum_group_size_override_is_honored() -> None:
+    window = _window(
+        [
+            _group("race", "Black", total=10, favorable=0),
+            _group("race", "White", total=10, favorable=10),
+        ],
+        parameters={"minimum_group_size": 5},
+    )
+
+    finding = AdverseImpactRatioPolicy().evaluate(window)
+
+    assert finding.outcome is PopulationFindingOutcome.FLAGGED
+    assert finding.parameters_used["minimum_group_size"] == 5.0
+
+
+@pytest.mark.parametrize("bad_threshold", [-1.0, 0.0, 1.5, float("nan"), float("inf")])
+def test_an_out_of_range_threshold_override_falls_back_to_the_default(bad_threshold: float) -> None:
+    window = _window(
+        [
+            _group("race", "Black", total=40, favorable=30),
+            _group("race", "White", total=40, favorable=40),
+        ],
+        parameters={"threshold": bad_threshold},
+    )
+
+    finding = AdverseImpactRatioPolicy().evaluate(window)
+
+    assert finding.parameters_used["threshold"] == 0.8
+    assert "ignored out-of-range threshold override" in finding.rationale
+
+
+@pytest.mark.parametrize("bad_size", [-5.0, 0.0, float("nan"), float("inf")])
+def test_an_out_of_range_minimum_group_size_override_falls_back_to_the_default(
+    bad_size: float,
+) -> None:
+    window = _window(
+        [
+            _group("race", "Black", total=40, favorable=30),
+            _group("race", "White", total=40, favorable=40),
+        ],
+        parameters={"minimum_group_size": bad_size},
+    )
+
+    finding = AdverseImpactRatioPolicy().evaluate(window)
+
+    assert finding.parameters_used["minimum_group_size"] == 30.0
+    assert "ignored out-of-range minimum_group_size override" in finding.rationale
+
+
+def test_minimum_group_size_has_a_hard_structural_floor_of_two() -> None:
+    """§13.16: an admin can configure minimum_group_size below the
+    built-in default, but not below the hard structural floor of 2 --
+    "compare at least two groups" is a precondition, not a judgment call,
+    and this override is otherwise valid (positive, finite), so no
+    fallback notice is expected."""
+    window = _window(
+        [
+            _group("race", "Black", total=1, favorable=0),
+            _group("race", "White", total=1, favorable=1),
+        ],
+        parameters={"minimum_group_size": 1},
+    )
+
+    finding = AdverseImpactRatioPolicy().evaluate(window)
+
+    assert finding.parameters_used["minimum_group_size"] == 2.0
+    assert "ignored" not in finding.rationale

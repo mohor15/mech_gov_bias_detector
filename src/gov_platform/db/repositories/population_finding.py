@@ -13,6 +13,14 @@ window_start, window_end)` constraint (migration `0015`) into a clean
 duplicate/overlapping run of `population_engine/run_policies.py` a
 detectable no-op rather than a race producing two disagreeing findings
 for "the same" window.
+
+M8 (architecture §10): `parameters_used` round-trips `NULL` as Python
+`None`, never as `{}` — a real, easy-to-get-wrong mapping detail this
+milestone depends on. `None` means "this finding predates parameter
+tracking" (every record created before M8); collapsing it to `{}` here
+would defeat `audit/verify_population_findings.py`'s `exclude_none=True`
+hash-compatibility fix for every such record. See
+`docs/milestones/M8.md` §4.5/§13.18.
 """
 
 from __future__ import annotations
@@ -43,6 +51,7 @@ class PopulationFindingRecord(BaseModel):
     outcome: PopulationFindingOutcome
     metric_values: dict[str, float]
     classification_snapshot: dict[str, str]
+    parameters_used: dict[str, float] | None = None
     rationale: str
     evaluated_at: datetime
     signature: str | None = None
@@ -62,6 +71,7 @@ class PopulationFindingRecord(BaseModel):
             outcome=self.outcome,
             metric_values=self.metric_values,
             classification_snapshot=self.classification_snapshot,
+            parameters_used=self.parameters_used,
             rationale=self.rationale,
             evaluated_at=self.evaluated_at,
         )
@@ -86,6 +96,9 @@ class PopulationFindingRepository:
             outcome=finding.outcome.value,
             metric_values=json.dumps(finding.metric_values),
             classification_snapshot=json.dumps(finding.classification_snapshot),
+            parameters_used=(
+                json.dumps(finding.parameters_used) if finding.parameters_used is not None else None
+            ),
             rationale=finding.rationale,
             evaluated_at=finding.evaluated_at,
             signature=signature,
@@ -133,6 +146,9 @@ class PopulationFindingRepository:
             outcome=PopulationFindingOutcome(row.outcome),
             metric_values=json.loads(row.metric_values),
             classification_snapshot=json.loads(row.classification_snapshot),
+            parameters_used=json.loads(row.parameters_used)
+            if row.parameters_used is not None
+            else None,
             rationale=row.rationale,
             evaluated_at=row.evaluated_at,
             signature=row.signature,

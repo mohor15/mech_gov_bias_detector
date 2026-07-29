@@ -36,6 +36,11 @@ Every finding is signed the same way evidence records are
 plugin call in this codebase gets; the original design draft omitted this
 and it was added as an implementation-readiness requirement during the
 hostile-review pass (`docs/milestones/M6.md` §4.5).
+
+M8 (architecture §10): each binding's own admin-configured `parameters`
+are attached onto its window immediately before `evaluate()` is called,
+not threaded through `build_population_window` itself, which stays
+generic and binding-unaware — see `docs/milestones/M8.md` §4.3/§13.2.
 """
 
 from __future__ import annotations
@@ -121,6 +126,11 @@ def run_population_policy_binding(
     window = build_population_window(
         engine, system_id=binding.system_id, window_start=window_start, window_end=window_end
     )
+    # M8: attach this binding's own admin-configured parameters onto the
+    # window immediately before evaluating -- build_population_window
+    # itself stays generic and binding-unaware (docs/milestones/M8.md
+    # §4.3/§13.2).
+    window = window.model_copy(update={"parameters": binding.parameters})
     population_policy = population_policy_cls()
     finding = run_sandboxed(lambda: population_policy.evaluate(window))
 

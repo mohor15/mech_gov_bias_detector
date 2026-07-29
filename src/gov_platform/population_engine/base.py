@@ -17,6 +17,12 @@ per protected-attribute-value, which Postgres computes far more cheaply
 than materializing every event in the window into Python and aggregating
 there. See `population_engine/window.py` and `docs/milestones/M6.md`
 §13.3's revised recommendation.
+
+M8 (architecture §10, Evaluation Framework): this port needed no change
+to generalize across a second concrete policy — `PopulationWindow` grew
+one additive `parameters` field instead, carrying a binding's
+admin-configured overrides the same way `classification_snapshot`
+already carries computed context. See `docs/milestones/M8.md` §4.1/§4.3.
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from gov_platform.schemas.population_finding import PopulationFinding
 
@@ -55,6 +61,16 @@ class PopulationWindow(BaseModel):
     `PopulationFinding` is self-contained and independently reproducible
     even if `protected_attribute_rules` changes later — see
     `docs/milestones/M6.md` §13.16.
+
+    `parameters` (M8, architecture §10) is the binding's admin-configured
+    overrides for whichever policy evaluates this window (e.g.
+    `threshold`, `minimum_group_size`, `z_critical`) — empty by default,
+    attached by `run_policies.py` from the `PopulationPolicyBinding`
+    immediately before calling `evaluate()`, never by
+    `population_engine/window.py`'s `build_population_window`, which
+    stays generic and binding-unaware. See `docs/milestones/M8.md`
+    §4.3/§13.2 for why this lives here rather than widening
+    `PopulationPolicy.evaluate`'s own signature.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -64,6 +80,7 @@ class PopulationWindow(BaseModel):
     window_end: datetime
     group_counts: list[PopulationGroupCount]
     classification_snapshot: dict[str, str]
+    parameters: dict[str, float] = Field(default_factory=dict)
 
 
 class PopulationPolicy(ABC):

@@ -269,6 +269,76 @@ def test_one_bindings_failure_is_reported_and_does_not_abort_the_rest_of_the_run
     assert bad_findings == []
 
 
+def test_two_population_policies_are_both_evaluated_independently_for_the_same_system(
+    postgres_url, db_engine, seed_finance_decisions
+) -> None:
+    """M8 (docs/milestones/M8.md §4.1): proves population-policy plurality
+    holds with a second, genuinely different concrete policy, with zero
+    change to run_policies.py's existing per-binding independence."""
+    system_id = seed_finance_decisions(
+        [
+            ({"race": "Black"}, True, _IN_WINDOW),
+            *[({"race": "Black"}, False, _IN_WINDOW) for _ in range(39)],  # 1/40 = 2.5%
+            *[({"race": "White"}, True, _IN_WINDOW) for _ in range(40)],  # 100%
+        ]
+    )
+    with Session(db_engine) as session:
+        binding_repository = PopulationPolicyBindingRepository()
+        binding_repository.create(
+            session, system_id=system_id, population_policy_id="adverse-impact-ratio"
+        )
+        binding_repository.create(
+            session, system_id=system_id, population_policy_id="disparity-significance-test"
+        )
+        session.commit()
+
+    exit_code = _run(postgres_url)
+
+    assert exit_code == 0
+    with Session(db_engine) as session:
+        findings = PopulationFindingRepository().list_for_system(session, system_id)
+
+    findings_by_policy = {f.population_policy_id: f for f in findings}
+    assert set(findings_by_policy) == {"adverse-impact-ratio", "disparity-significance-test"}
+    for finding in findings_by_policy.values():
+        assert finding.signature is not None
+        assert finding.parameters_used is not None  # every M8-era finding tracks this
+
+
+def test_a_bindings_parameters_are_threaded_through_to_the_computed_finding(
+    postgres_url, db_engine, seed_finance_decisions
+) -> None:
+    """M8 (docs/milestones/M8.md §4.3): a binding's admin-configured
+    `parameters` actually change what gets computed, end to end through
+    the real batch runner, not just at the policy's own `evaluate()`
+    layer."""
+    system_id = seed_finance_decisions(
+        [
+            ({"race": "Black"}, True, _IN_WINDOW),
+            *[({"race": "Black"}, False, _IN_WINDOW) for _ in range(39)],  # rate 0.025
+            *[({"race": "White"}, True, _IN_WINDOW) for _ in range(40)],  # rate 1.0 -> ratio 0.025
+        ]
+    )
+    with Session(db_engine) as session:
+        PopulationPolicyBindingRepository().create(
+            session,
+            system_id=system_id,
+            population_policy_id="adverse-impact-ratio",
+            parameters={"threshold": 0.01},  # low enough that 0.025 no longer flags
+        )
+        session.commit()
+
+    exit_code = _run(postgres_url)
+
+    assert exit_code == 0
+    with Session(db_engine) as session:
+        findings = PopulationFindingRepository().list_for_system(session, system_id)
+
+    assert len(findings) == 1
+    assert findings[0].outcome.value == "CLEAR"
+    assert findings[0].parameters_used == {"threshold": 0.01, "minimum_group_size": 30.0}
+
+
 def test_window_start_and_window_end_must_be_given_together() -> None:
     # argparse.ArgumentParser.error() calls sys.exit(2) directly.
     with pytest.raises(SystemExit) as exc_info:

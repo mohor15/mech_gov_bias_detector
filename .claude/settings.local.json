@@ -76,7 +76,25 @@
       "Bash(curl -sf http://127.0.0.1:8020/v1/admin/metrics)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" \"http://127.0.0.1:8020/v1/admin/metrics?since=2026-01-01T00:00:00\")",
       "Bash(taskkill *)",
-      "Bash(grep -n \"^# M7\\\\|^## What Was Built\\\\|^## Production-Readiness\\\\|^## Test Statistics\\\\|^## Verdict\\\\|^---$\\\\|^## Design Review\" docs/milestones/M7.md)"
+      "Bash(grep -n \"^# M7\\\\|^## What Was Built\\\\|^## Production-Readiness\\\\|^## Test Statistics\\\\|^## Verdict\\\\|^---$\\\\|^## Design Review\" docs/milestones/M7.md)",
+      "Bash(python -m ruff check src)",
+      "Bash(python -m ruff check src --fix)",
+      "Bash(python -m ruff format src)",
+      "Bash(python -m pytest -q tests/integration/test_verify_population_findings_postgres.py::test_verify_from_database_reads_real_rows_and_reports_a_checked_count -x)",
+      "Bash(python -m ruff format src/gov_platform/population_engine/policies/disparity_significance_test.py)",
+      "Bash(python -m ruff check src/gov_platform/population_engine/policies/disparity_significance_test.py)",
+      "Bash(python -m ruff check src tests)",
+      "Bash(python -m ruff format --check src tests)",
+      "Bash(python -m mypy --strict src)",
+      "Bash(python -m ruff format src tests)",
+      "Bash(python -m ruff check src tests --fix)",
+      "Bash(mypy --strict src)",
+      "Bash(python -m pytest tests/integration/test_admin_population_policy_bindings_api.py -q)",
+      "Bash(xargs grep -l -i postgres)",
+      "Bash(docker rm *)",
+      "Bash(docker run *)",
+      "Bash(powershell -Command \"Get-Process 'Docker Desktop' -ErrorAction SilentlyContinue\")",
+      "Bash(powershell -Command \"Test-Path 'C:\\\\Program Files\\\\Docker\\\\Docker\\\\Docker Desktop.exe'\")"
     ]
   }
 }

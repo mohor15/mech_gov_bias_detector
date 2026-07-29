@@ -1,0 +1,13 @@
+-- Admin-configurable parameters for population policies -- architecture
+-- §10, M8. Nullable: NULL/absent means "use this policy's own built-in
+-- defaults", the exact behavior every binding created before M8 already
+-- has and keeps unchanged. JSON-encoded, matching every other JSON-shaped
+-- column in this schema's own convention (metric_values,
+-- classification_snapshot, etc.).
+--
+-- Deliberately does not carry a NOT NULL/DEFAULT here -- see
+-- docs/milestones/M8.md §4.5/§13.18 for why the sibling column on
+-- population_findings (migration 0021) must not be backfilled; this
+-- column has no such constraint since population_policy_bindings is
+-- ordinary, unsigned admin configuration, not signed governance output.
+ALTER TABLE population_policy_bindings ADD COLUMN parameters TEXT;

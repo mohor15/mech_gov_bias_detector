@@ -161,6 +161,118 @@ def test_set_lifecycle_state_on_an_unknown_binding_raises(db_engine) -> None:
         )
 
 
+# --- M8: admin-configurable parameters and the relaxed uniqueness
+# constraint (docs/milestones/M8.md §4.3/§4.4) ---
+
+
+def test_create_with_no_parameters_persists_and_reads_back_an_empty_dict(db_engine) -> None:
+    system_id = _new_system_id(db_engine)
+    with Session(db_engine) as session:
+        binding = PopulationPolicyBindingRepository().create(
+            session, system_id=system_id, population_policy_id="adverse-impact-ratio"
+        )
+
+    assert binding.parameters == {}
+
+
+def test_create_with_parameters_persists_and_reads_back(db_engine) -> None:
+    system_id = _new_system_id(db_engine)
+    with Session(db_engine) as session:
+        repository = PopulationPolicyBindingRepository()
+        created = repository.create(
+            session,
+            system_id=system_id,
+            population_policy_id="adverse-impact-ratio",
+            parameters={"threshold": 0.75},
+        )
+        session.commit()
+
+        fetched = repository.get(session, created.id)
+
+    assert created.parameters == {"threshold": 0.75}
+    assert fetched is not None
+    assert fetched.parameters == {"threshold": 0.75}
+
+
+def test_get_active_by_identity_finds_an_active_binding(db_engine) -> None:
+    system_id = _new_system_id(db_engine)
+    with Session(db_engine) as session:
+        repository = PopulationPolicyBindingRepository()
+        created = repository.create(
+            session, system_id=system_id, population_policy_id="adverse-impact-ratio"
+        )
+        session.commit()
+
+        found = repository.get_active_by_identity(
+            session, system_id=system_id, population_policy_id="adverse-impact-ratio"
+        )
+
+    assert found is not None
+    assert found.id == created.id
+
+
+def test_get_active_by_identity_returns_none_for_a_deactivated_binding(db_engine) -> None:
+    """The hostile-review-pass finding (§13.19): `get_by_identity` still
+    finds a deactivated binding, but `get_active_by_identity` must not --
+    this is the exact distinction the Admin API's conflict check depends
+    on to make recreation possible."""
+    system_id = _new_system_id(db_engine)
+    with Session(db_engine) as session:
+        repository = PopulationPolicyBindingRepository()
+        created = repository.create(
+            session, system_id=system_id, population_policy_id="adverse-impact-ratio"
+        )
+        repository.set_lifecycle_state(
+            session, created.id, PopulationPolicyBindingLifecycleState.INACTIVE
+        )
+        session.commit()
+
+        active = repository.get_active_by_identity(
+            session, system_id=system_id, population_policy_id="adverse-impact-ratio"
+        )
+        lifecycle_blind = repository.get_by_identity(
+            session, system_id=system_id, population_policy_id="adverse-impact-ratio"
+        )
+
+    assert active is None
+    assert lifecycle_blind is not None
+    assert lifecycle_blind.id == created.id
+
+
+def test_a_new_binding_can_be_created_after_the_old_one_is_deactivated(db_engine) -> None:
+    """The end-to-end proof migration `0022`'s relaxed constraint plus
+    `get_active_by_identity` together make possible (docs/milestones/M8.md
+    §4.4/§13.19) -- at the repository layer. The equivalent proof through
+    the Admin API itself lives in
+    test_admin_population_policy_bindings_api.py, since the repository
+    was never the layer the original bug lived in."""
+    system_id = _new_system_id(db_engine)
+    with Session(db_engine) as session:
+        repository = PopulationPolicyBindingRepository()
+        original = repository.create(
+            session,
+            system_id=system_id,
+            population_policy_id="adverse-impact-ratio",
+            parameters={"threshold": 0.8},
+        )
+        repository.set_lifecycle_state(
+            session, original.id, PopulationPolicyBindingLifecycleState.INACTIVE
+        )
+        session.commit()
+
+        replacement = repository.create(
+            session,
+            system_id=system_id,
+            population_policy_id="adverse-impact-ratio",
+            parameters={"threshold": 0.7},
+        )
+        session.commit()
+
+    assert replacement.id != original.id
+    assert replacement.parameters == {"threshold": 0.7}
+    assert replacement.lifecycle_state is PopulationPolicyBindingLifecycleState.ACTIVE
+
+
 def test_list_all_includes_created_bindings(db_engine) -> None:
     system_id = _new_system_id(db_engine)
     with Session(db_engine) as session:

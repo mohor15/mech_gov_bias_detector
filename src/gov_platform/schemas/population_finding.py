@@ -24,6 +24,23 @@ This model deliberately carries no `signature`/`signing_key_id` — those are
 a persistence-layer concern, added by `db/repositories/population_finding.py`'s
 `PopulationFindingRecord`, the same split `audit/evidence_store.py` draws
 between `GovernanceVerdict` (no signature) and `EvidenceRecord` (has one).
+
+`parameters_used` (M8, architecture §10) is the reproducibility fix for
+admin-configurable population-policy parameters, the exact same discipline
+`classification_snapshot` established for `protected_attribute_rules`:
+the *effective* parameter values (defaults included, not only overrides)
+a policy actually used, immune to a later change to its binding.
+Deliberately `dict[str, float] | None`, not `Field(default_factory=dict)`
+— every `PopulationFinding` signed before this field existed must
+continue to hash and verify identically to how it was originally signed,
+which `None` (excluded from the signed payload by
+`audit/verify_population_findings.py`'s `exclude_none=True`) preserves and
+an always-present `{}` would not. See `docs/milestones/M8.md` §4.5/§13.18
+for the full reasoning — this is the first time this codebase has added a
+field to an already-populated signed model, a genuinely different problem
+than adding one before any record exists under the older shape (which is
+how `classification_snapshot` itself was added, at M6, before any
+`PopulationFinding` had ever been signed at all).
 """
 
 from __future__ import annotations
@@ -64,6 +81,7 @@ class PopulationFinding(BaseModel):
     outcome: PopulationFindingOutcome
     metric_values: dict[str, float] = Field(default_factory=dict)
     classification_snapshot: dict[str, str] = Field(default_factory=dict)
+    parameters_used: dict[str, float] | None = None
     rationale: str = Field(..., min_length=1)
 
     evaluated_at: datetime

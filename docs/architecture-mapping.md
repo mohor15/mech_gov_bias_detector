@@ -1,28 +1,99 @@
-# Architecture → Module Mapping (M7)
+# Architecture → Module Mapping (M8)
 
 Onboarding reference: which `ARCH-GOV-002` component each module implements,
 and the precise boundary as of this milestone — what's real today vs. what's
 deferred and to which milestone. Read alongside each module's own docstring,
 which is the authoritative source; this table is the map, not the territory.
 
-| Architecture component (§) | Module | Status as of M7 |
+| Architecture component (§) | Module | Status as of M8 |
 |---|---|---|
 | §4.1 Ingestion Gateway & Adapter Framework | `adapters/base.py`, `adapters/synthetic.py`, `adapters/credit_scorecard.py` | Real, generic (`Adapter[TPayload]`) port + two implementations. **Unchanged by M6** — both ingestion routes, and everything downstream of them, are byte-for-byte identical to M5 (see M6-specific notes: the async plane M6 builds is additive and parallel, not a change to per-event ingestion). |
 | §4.2 Normalization Service & Canonical Decision Event | `schemas/decision_event.py`, `normalization/service.py` | Real, minimal canonical schema; structural normalization only (whitespace, timezone, precision) — unchanged by M6. |
 | §4.3 Protected Attribute Resolution Service | `schemas/protected_attribute.py`, `protected_attributes/classification.py`, `protected_attributes/resolver.py`, `schemas/protected_attribute_rule.py`, `db/repositories/protected_attribute_rule.py` | Unchanged by M6 for this service itself. **M6 adds a third, read-only consumer** of the DB-backed `protected_attribute_rules` table (`population_engine/window.py`, via its own direct repository call, not through `ProtectedAttributeResolver`) — see M6-specific notes on why, and on the reproducibility consequence that creates. |
 | §6 Plugin Architecture | `adapters/base.py`, `policy_engine/base.py`, `population_engine/base.py`, `plugins/registry.py`, `plugins/bootstrap.py`, `plugins/sandbox.py`, `schemas/plugin_registration.py`, `db/repositories/plugin_registration.py`, `api/admin/plugins.py` | In-process registry + database-backed lifecycle state + a timeout/exception-isolation sandbox around every plugin call. **New in M6**: `PluginType.POPULATION_POLICY` — a third plugin kind, using the exact same registry/lifecycle mechanism `Adapter`/`Policy` already do, no second mechanism invented. `Adapter`/`Policy`/`PopulationPolicy` are now the three ports; Policy Bindings and Population Policy Bindings are separate, orthogonal axes (*which* trusted policies apply, not *whether* a policy's code is trusted). |
 | §7 Policy Engine | `policy_engine/base.py`, `policy_engine/policies/*.py`, `schemas/policy_binding.py`, `db/repositories/policy_binding.py`, `api/admin/policy_bindings.py` | Real port + three reference policies, unchanged by M6. `Policy.evaluate(event) -> Finding`'s signature remains untouched — population-level evaluation is a deliberately separate, parallel port (`population_engine/base.py`, below), never a widened `Policy`. |
-| §7/§8 Population-Level Policy Engine | `population_engine/base.py` (`PopulationPolicy`, `PopulationWindow`, `PopulationGroupCount`), `population_engine/window.py`, `population_engine/policies/adverse_impact_ratio.py`, `population_engine/run_policies.py`, `schemas/population_finding.py`, `schemas/population_policy_binding.py`, `db/repositories/population_finding.py`, `db/repositories/population_policy_binding.py`, `api/admin/population_findings.py`, `api/admin/population_policy_bindings.py` | **New in M6.** A third plugin port, `PopulationPolicy`, evaluating many `DecisionEvent`s for one `System` over one time window into one `PopulationFinding` — structurally parallel to, and never touching, `Policy`/`Finding`/`Verdict`. One concrete policy ships: `adverse-impact-ratio` (EEOC "4/5ths rule", 29 CFR § 1607.4(D)). Triggered by an explicitly-invoked batch CLI (`population_engine/run_policies.py`), not a daemon or in-process scheduler — this *is* "the async ingestion plane" (§4.1's citation), read as the plane population-level policies specifically need, not a redesign of per-event ingestion. `PopulationPolicyBinding` is `system_id`-keyed, a new table, deliberately separate from `policy_bindings`. See M6-specific notes. |
+| §7/§8 Population-Level Policy Engine | `population_engine/base.py` (`PopulationPolicy`, `PopulationWindow`, `PopulationGroupCount`), `population_engine/window.py`, `population_engine/policies/adverse_impact_ratio.py`, `population_engine/policies/disparity_significance_test.py`, `population_engine/policies/_shared.py`, `population_engine/run_policies.py`, `schemas/population_finding.py`, `schemas/population_policy_binding.py`, `db/repositories/population_finding.py`, `db/repositories/population_policy_binding.py`, `api/admin/population_findings.py`, `api/admin/population_policy_bindings.py` | **New in M6, generalized at M8.** A third plugin port, `PopulationPolicy`, evaluating many `DecisionEvent`s for one `System` over one time window into one `PopulationFinding` — structurally parallel to, and never touching, `Policy`/`Finding`/`Verdict`. Two concrete policies ship: `adverse-impact-ratio` (M6, EEOC "4/5ths rule", 29 CFR § 1607.4(D)) and `disparity-significance-test` (M8, a two-proportion statistical-significance test, *Castaneda v. Partida* convention) — genuinely different kinds of judgment, proving the port generalizes, not a second ratio-threshold variant. **M8**: both policies' thresholds/minimum sample sizes are now admin-configurable per binding (`PopulationWindow.parameters`, resolved from the binding, with range validation and fallback to built-in defaults — see M8-specific notes), and `population_policy_bindings`' uniqueness is relaxed to a partial index scoped to `ACTIVE` (migration `0022`) so a binding can actually be deactivated and recreated with different parameters. Triggered by an explicitly-invoked batch CLI (`population_engine/run_policies.py`), not a daemon or in-process scheduler — this *is* "the async ingestion plane" (§4.1's citation), read as the plane population-level policies specifically need, not a redesign of per-event ingestion. `PopulationPolicyBinding` is `system_id`-keyed, a new table, deliberately separate from `policy_bindings`. See M6/M8-specific notes. |
 | §8 Governance Engine | `governance_engine/engine.py`, `schemas/verdict.py` | Unchanged by M6. `GovernanceEngine`/`GovernanceVerdict` remain per-event; population-level results never flow through them. |
 | §9 Monitoring | `observability/logging.py`, `observability/metrics.py`, `api/readiness.py`, `api/admin/metrics.py` | **Real as of M7.** `GET /readyz` — a real readiness check (database connectivity only; "adapter/source reachability" is currently vacuous, no first-party `Adapter` has a real external dependency yet), additive alongside the unchanged `/healthz`. `GET /v1/admin/metrics?since=` — a single, DB-query-backed JSON aggregate of system-health (current-state) and governance-health (windowed) signal, no new persisted state, no Prometheus/OpenTelemetry, no dashboard/UI (see M7-specific notes). |
-| §10 Evaluation Framework | `population_engine/policies/adverse_impact_ratio.py` (one concrete metric only) | **Partially real as of M6** — one hardcoded population-level metric, not a general, pluggable statistical-evaluation framework. A configurable-metric framework (multiple tests, admin-defined thresholds) remains M8's job; M6 deliberately does not reach for it early (see `docs/milestones/M6.md` §13.9). |
+| §10 Evaluation Framework | `population_engine/policies/adverse_impact_ratio.py`, `population_engine/policies/disparity_significance_test.py`, `population_engine/policies/_shared.py` | **Real as of M8.** Two concrete, genuinely different statistical tests (a ratio threshold and a significance test) plus admin-defined thresholds per binding — the two things `architecture-mapping.md`'s own M6-era citation named as missing. Still not a "bring your own statistical test" plugin surface beyond these two — that remains unscheduled until a concrete third need appears (see `docs/milestones/M8.md` §15). |
 | §11 Compliance Dashboard | *(not yet built)* | M10. |
-| §12 Human Review Workflow | *(not yet built)* | M9 — an `ESCALATE_FOR_REVIEW` verdict (M5) and a `FLAGGED` `PopulationFinding` (M6) are both fully computed and persisted; nothing yet queues either for a human to act on. |
-| §13 Audit System | `audit/hash_chain.py`, `audit/evidence_store.py`, `audit/verify_chain.py`, `audit/signing.py`, `audit/verify_population_findings.py` | Real hash-chained Postgres ledger for per-event evidence, append-only enforced at the database-privilege level, plus a standalone chain-verification job/CLI — unchanged by M6. **New in M6**: `population_findings` gets the identical append-only privilege lockdown (`REVOKE UPDATE, DELETE`, migration `0015`) and is signed (reusing `audit/signing.py` unchanged) — but is **not chained** into `evidence_chain` (no `previous_hash`, no single `decision_event_id` it belongs to). `audit/verify_population_findings.py` is a separate, parallel verifier — a plain content hash over each finding's own canonical payload (including `classification_snapshot`), not `hash_chain`'s chained variant. Key rotation/KMS custody and retention tiers remain unassigned/M11 for both. |
+| §12 Human Review Workflow | *(not yet built)* | M9 — an `ESCALATE_FOR_REVIEW` verdict (M5) and a `FLAGGED` `PopulationFinding` from either population policy (M6/M8) are both fully computed and persisted; nothing yet queues either for a human to act on. Unchanged by M8: a second population policy that can also produce `FLAGGED` does not add a workflow for either one. |
+| §13 Audit System | `audit/hash_chain.py`, `audit/evidence_store.py`, `audit/verify_chain.py`, `audit/signing.py`, `audit/verify_population_findings.py` | Real hash-chained Postgres ledger for per-event evidence, append-only enforced at the database-privilege level, plus a standalone chain-verification job/CLI — unchanged by M6/M8. **New in M6**: `population_findings` gets the identical append-only privilege lockdown (`REVOKE UPDATE, DELETE`, migration `0015`) and is signed (reusing `audit/signing.py` unchanged) — but is **not chained** into `evidence_chain` (no `previous_hash`, no single `decision_event_id` it belongs to). `audit/verify_population_findings.py` is a separate, parallel verifier — a plain content hash over each finding's own canonical payload (including `classification_snapshot`), not `hash_chain`'s chained variant. **New in M8**: `population_finding_hash` dumps with `exclude_none=True`, so `parameters_used` (nullable, un-backfilled, migration `0021`) is omitted from the hashed payload for every finding signed before this field existed, rather than changing their recomputed hash and silently invalidating their already-issued signatures — the first time this codebase has added a field to an already-populated signed model (see `docs/milestones/M8.md` §4.5/§13.18). Key rotation/KMS custody and retention tiers remain unassigned/M11 for both. |
 | §14 Reporting | *(not yet built)* | M12. |
-| §15 APIs | `api/health.py`, `api/readiness.py`, `api/ingestion/routes.py`, `api/admin/systems.py`, `api/admin/plugins.py`, `api/admin/policy_bindings.py`, `api/admin/protected_attribute_rules.py`, `api/admin/population_policy_bindings.py`, `api/admin/population_findings.py`, `api/admin/metrics.py`, `api/app.py`, `api/asgi.py` | Ingestion routes are registry-generated (one per registered adapter — currently `synthetic` and `credit-scorecard`), **unchanged by M7**, same response shape; `/healthz` also unchanged. **New in M7**: `GET /readyz` (additive, see §9 above) and `GET /v1/admin/metrics` (read-only, no `POST`). No endpoint anywhere has authentication yet, including these two — the same standing gap M5/M6 named, now a four-consecutive-milestone-and-counting gap (see M7-specific notes). `app.py` is still the side-effect-free factory. |
-| §16 Database Design | `db/session.py`, `db/models.py`, `db/migrate.py`, `db/repositories/`, `schemas/system.py`, `schemas/model_version.py`, `schemas/protected_attribute.py`, `schemas/plugin_registration.py`, `schemas/policy_binding.py`, `schemas/protected_attribute_rule.py`, `schemas/population_finding.py`, `schemas/population_policy_binding.py` | Real Postgres, formalized via numbered `.sql` migrations (schema authority) + a repository layer per entity. **New in M7**: three indexes (migrations `0017`–`0019`, on `verdicts`, `findings`, and `population_findings` respectively) supporting the new windowed metrics-aggregate read pattern — no new table, no existing table altered. `db/session.create_db_engine` now sets a bounded connection timeout (found necessary implementing the readiness check — see `docs/milestones/M7.md`'s production-readiness review), applying to every consumer of the shared engine. SQLAlchemy models are query-time mappings only — never used to generate DDL. Multi-tenancy and the analytical-warehouse split remain later milestones. |
-| §17 Deployment Architecture | `infra/docker/` | Single container, single service; assumes an external Postgres — unchanged by M7. A real orchestrator can now use `GET /readyz` as an actual readiness probe rather than reusing `/healthz` (liveness only) for both purposes. Multi-plane topology, multi-tenancy, and mTLS are M13. |
+| §15 APIs | `api/health.py`, `api/readiness.py`, `api/ingestion/routes.py`, `api/admin/systems.py`, `api/admin/plugins.py`, `api/admin/policy_bindings.py`, `api/admin/protected_attribute_rules.py`, `api/admin/population_policy_bindings.py`, `api/admin/population_findings.py`, `api/admin/metrics.py`, `api/app.py`, `api/asgi.py` | Ingestion routes are registry-generated (one per registered adapter — currently `synthetic` and `credit-scorecard`), **unchanged by M7/M8**, same response shape; `/healthz` also unchanged. `GET /readyz` and `GET /v1/admin/metrics` (M7) unchanged by M8. **New in M8**: `POST /v1/admin/population-policy-bindings`'s request/response bodies gain an additive `parameters` field, and its conflict pre-check now calls the new `get_active_by_identity` (lifecycle-scoped) rather than the lifecycle-blind `get_by_identity` — the schema relaxation (migration `0022`) alone did not make a binding's parameters actually changeable without this. Still no `PATCH`/update endpoint. No endpoint anywhere has authentication yet, including this one — the same standing gap M5/M6/M7 named, now a five-consecutive-milestone-and-counting gap (see M8-specific notes). `app.py` is still the side-effect-free factory. |
+| §16 Database Design | `db/session.py`, `db/models.py`, `db/migrate.py`, `db/repositories/`, `schemas/system.py`, `schemas/model_version.py`, `schemas/protected_attribute.py`, `schemas/plugin_registration.py`, `schemas/policy_binding.py`, `schemas/protected_attribute_rule.py`, `schemas/population_finding.py`, `schemas/population_policy_binding.py` | Real Postgres, formalized via numbered `.sql` migrations (schema authority) + a repository layer per entity. **New in M7**: three indexes (migrations `0017`–`0019`, on `verdicts`, `findings`, and `population_findings` respectively) supporting the new windowed metrics-aggregate read pattern — no new table, no existing table altered. **New in M8**: two additive nullable columns (`population_policy_bindings.parameters`, migration `0020`; `population_findings.parameters_used`, migration `0021`, deliberately un-backfilled — see §13 above) and one non-purely-additive change — `population_policy_bindings`' plain `UNIQUE (system_id, population_policy_id)` constraint relaxed to a partial unique index scoped to `ACTIVE` (migration `0022`), the first migration since M1 to alter rather than only add to an existing table's constraints, narrowly justified (see `docs/milestones/M8.md` §4.4/§13.12). `db/session.create_db_engine`'s bounded connection timeout (M7) unchanged. SQLAlchemy models are query-time mappings only — never used to generate DDL. Multi-tenancy and the analytical-warehouse split remain later milestones. |
+| §17 Deployment Architecture | `infra/docker/` | Single container, single service; assumes an external Postgres — unchanged by M7/M8. A real orchestrator can use `GET /readyz` as an actual readiness probe rather than reusing `/healthz` (liveness only) for both purposes. Multi-plane topology, multi-tenancy, and mTLS are M13. |
+
+## M8-specific notes
+
+- **A generalization milestone, not a new pipeline.** M8 does to
+  `population_engine` what M4 did to `Policy`/`GovernanceEngine` and M5
+  did to `PolicyBinding`: ship a second concrete implementation of an
+  already-general-enough port, and move a judgment call (a threshold)
+  from code onto an admin-configurable binding. No new plugin port, no
+  new persisted-output table, no rewrite of the Event Lake read pattern.
+- **`DisparitySignificanceTestPolicy` is a genuinely different kind of
+  judgment, not a second ratio-threshold variant.** A two-proportion
+  z-test answers "is this disparity plausibly noise," where
+  `adverse-impact-ratio` answers "is this disparity practically large" —
+  the same "different kind of judgment" discipline M4 used picking
+  `HighDebtRatioGatePolicy` over a second fairness-check variant. No new
+  external dependency — the z-statistic is closed-form arithmetic.
+- **Two statistical-validity guards beyond a flat sample-size floor**,
+  found scrutinizing the z-test math during this milestone's own
+  hostile-review pass: an expected-cell-count check (a group can clear
+  `minimum_group_size` on raw count alone while still having a rate too
+  extreme for the normal approximation to be valid) and a degenerate-
+  variance guard (never actually reachable once the expected-cell-count
+  check holds, kept as defense in depth).
+- **Admin-configurable parameters thread through `PopulationWindow`, not
+  a widened `evaluate()` signature.** `PopulationWindow` already existed
+  to carry "everything this evaluation needs beyond the window's raw
+  data" (`classification_snapshot` set this precedent at M6) — a
+  `parameters` field is the same pattern for a second kind of context,
+  not a new one. Each policy validates its own resolved parameters
+  against a sane range, falling back to its built-in default rather than
+  silently proceeding with a nonsensical value or raising.
+- **The headline hostile-review-pass finding: adding a field to an
+  already-signed, already-populated model is a genuinely new problem
+  class for this codebase.** `parameters_used`'s first draft (an
+  always-present field, backfilled `NOT NULL DEFAULT '{}'`) would have
+  silently invalidated every `PopulationFinding` signed before M8 the
+  first time `verify_population_findings` ran afterward — `population_finding_hash`
+  hashes the whole model, so a new key changes the hash for every
+  historical record too. Fixed with a nullable, un-backfilled column and
+  `exclude_none=True` on the hash. Every prior signed-schema change
+  (`classification_snapshot` included) landed before any record existed
+  under the older shape, so this exact conflict never previously arose.
+- **The schema fix that makes a binding's parameters changeable requires
+  an application-code fix too.** Relaxing `population_policy_bindings`'
+  uniqueness to a partial index scoped to `ACTIVE` (migration `0022`) is
+  necessary but not sufficient: `create_population_policy_binding`'s own
+  conflict pre-check called `get_by_identity`, which ignores
+  `lifecycle_state` and would still reject recreating a deactivated
+  binding. Fixed with a new `get_active_by_identity` method, added rather
+  than changing `get_by_identity`'s existing, lifecycle-blind semantics,
+  which other repositories and `plugins/seed_registry.py` depend on
+  unchanged.
+- **A genuinely pre-existing, previously-undiscovered defect was found as
+  a side effect of this review, not introduced by it**: `policy_bindings`
+  (M5) has the identical lifecycle-blind conflict check and the identical
+  plain (non-partial) uniqueness constraint `population_policy_bindings`
+  had before this fix — meaning `PolicyBinding.severity` has likely never
+  actually been changeable via "deactivate and recreate" in this
+  platform's history. Deliberately left unfixed inside M8 (M5's scope,
+  not the Evaluation Framework) — documented and flagged as a candidate
+  for a small, dedicated follow-up.
+- **No cross-policy aggregation mechanism.** Each `PopulationPolicy`'s
+  finding for a given `(system_id, window)` stays its own independent,
+  parallel row, the same "structurally separate, never combined"
+  relationship `shadow_findings` has to `findings` — building a
+  combining mechanism now, with exactly two policies and no concrete
+  requirement to combine their outputs, would be the same premature
+  generalization this project has declined at every prior opportunity.
+
+See `docs/milestones/M8.md` for the full design review, hostile-review-
+pass corrections, and production-readiness report.
 
 ## M7-specific notes
 

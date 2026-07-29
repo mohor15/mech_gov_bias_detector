@@ -27,6 +27,9 @@ from gov_platform.policy_engine.policies import (  # noqa: F401
 from gov_platform.population_engine.policies import (  # noqa: F401
     adverse_impact_ratio as _adverse_impact_ratio,
 )
+from gov_platform.population_engine.policies import (  # noqa: F401
+    disparity_significance_test as _disparity_significance_test,
+)
 
 
 def bootstrap_plugins() -> None:

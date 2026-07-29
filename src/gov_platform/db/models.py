@@ -175,6 +175,10 @@ class PopulationPolicyBindingRow(Base):
     population_policy_id: Mapped[str] = mapped_column(String, nullable=False)
     lifecycle_state: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # M8: admin-configured overrides, JSON-encoded. Nullable -- NULL means
+    # "use the policy's own built-in defaults", the behavior every binding
+    # created before M8 already has (migration 0020).
+    parameters: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class PopulationFindingRow(Base):
@@ -189,6 +193,11 @@ class PopulationFindingRow(Base):
     outcome: Mapped[str] = mapped_column(String, nullable=False)
     metric_values: Mapped[str] = mapped_column(Text, nullable=False)
     classification_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    # M8: nullable, no default, never backfilled (migration 0021) -- NULL
+    # means "not tracked" (a pre-M8 finding), not "no parameters used".
+    # See docs/milestones/M8.md §4.5/§13.18 for why this must stay
+    # nullable forever rather than gain a NOT NULL default later.
+    parameters_used: Mapped[str | None] = mapped_column(Text, nullable=True)
     rationale: Mapped[str] = mapped_column(Text, nullable=False)
     evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     # Never None in practice (unlike evidence_chain's M0-M4 backfill case --

@@ -49,6 +49,7 @@ def _signed_record(
         outcome=finding.outcome,
         metric_values=finding.metric_values,
         classification_snapshot=finding.classification_snapshot,
+        parameters_used=finding.parameters_used,
         rationale=finding.rationale,
         evaluated_at=finding.evaluated_at,
         signature=signature,
@@ -116,6 +117,75 @@ def test_an_unsigned_record_is_skipped_not_failed() -> None:
     result = verify_population_findings([record], public_key_hex=signer.public_key_hex())
 
     assert result.valid is True
+
+
+def test_a_pre_m8_finding_with_no_parameters_used_field_still_verifies() -> None:
+    """The headline regression proof for docs/milestones/M8.md §4.5/§13.18:
+    a finding built exactly as pre-M8 code would have built it (no
+    `parameters_used` key constructed at all, not merely one explicitly
+    set to `None`) must still verify against the signature it was
+    actually issued under. This test fails against the *original*
+    (pre-hostile-review) draft's design (an always-present
+    `parameters_used` field hashed unconditionally) and passes against
+    the corrected one (`exclude_none=True`)."""
+    signer = load_signer(None)
+    pre_m8_payload = {
+        "population_finding_id": "pf-pre-m8",
+        "population_policy_id": "adverse-impact-ratio",
+        "population_policy_version": "0.1.0",
+        "system_id": "sys-001",
+        "window_start": datetime(2026, 1, 1, tzinfo=UTC),
+        "window_end": datetime(2026, 1, 2, tzinfo=UTC),
+        "outcome": PopulationFindingOutcome.FLAGGED,
+        "metric_values": {"race:Black": 0.75},
+        "classification_snapshot": {"race": "DIRECT"},
+        "rationale": "pre-M8 finding",
+        "evaluated_at": datetime(2026, 1, 2, tzinfo=UTC),
+    }
+    # Simulate the exact pre-M8 hash: no parameters_used key in the dumped
+    # payload at all -- what `population_finding_hash` would have computed
+    # before this field existed.
+    pre_m8_finding = PopulationFinding(**pre_m8_payload)  # type: ignore[arg-type]
+    pre_m8_dump = pre_m8_finding.model_dump(mode="json")
+    assert "parameters_used" not in pre_m8_dump or pre_m8_dump["parameters_used"] is None
+    original_signature = signer.sign(population_finding_hash(pre_m8_finding))
+    record = _signed_record(pre_m8_finding, signature=original_signature)
+
+    result = verify_population_findings([record], public_key_hex=signer.public_key_hex())
+
+    assert result.valid is True
+
+
+def test_a_new_finding_with_parameters_used_signs_and_verifies_correctly() -> None:
+    """The other branch of `exclude_none=True`: a finding computed from M8
+    onward always has a real, non-`None` `parameters_used`, which must be
+    part of what's signed (tamper-evident), not silently excluded."""
+    signer = load_signer(None)
+    finding = _finding(parameters_used={"threshold": 0.8, "minimum_group_size": 30.0})
+    record = _signed_record(finding, signature=signer.sign(population_finding_hash(finding)))
+
+    result = verify_population_findings([record], public_key_hex=signer.public_key_hex())
+
+    assert result.valid is True
+
+
+def test_tampering_with_parameters_used_is_detected() -> None:
+    """`parameters_used` is part of the signed payload for a new finding
+    -- altering it after signing must invalidate the signature, the same
+    tamper-evidence guarantee `classification_snapshot` already has."""
+    signer = load_signer(None)
+    finding = _finding(parameters_used={"threshold": 0.8, "minimum_group_size": 30.0})
+    signature = signer.sign(population_finding_hash(finding))
+    tampered = _signed_record(
+        finding.model_copy(
+            update={"parameters_used": {"threshold": 0.5, "minimum_group_size": 30.0}}
+        ),
+        signature=signature,
+    )
+
+    result = verify_population_findings([tampered], public_key_hex=signer.public_key_hex())
+
+    assert result.valid is False
 
 
 def test_verification_stops_at_the_first_invalid_record() -> None:

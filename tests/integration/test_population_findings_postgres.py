@@ -156,6 +156,45 @@ def test_list_all_includes_created_findings(db_engine) -> None:
     assert created.id in {f.id for f in all_findings}
 
 
+def test_parameters_used_defaults_to_none_and_round_trips_as_none(db_engine) -> None:
+    """M8 (docs/milestones/M8.md §4.5/§13.18): a finding built without
+    setting `parameters_used` (reproducing every pre-M8 record) must read
+    back as `None`, not `{}` -- the exact distinction the signature
+    hash-compatibility fix depends on."""
+    system_id = _new_system_id(db_engine)
+    finding = _finding(system_id)
+    assert finding.parameters_used is None
+
+    with Session(db_engine) as session:
+        record = PopulationFindingRepository().create(
+            session, finding, signature=None, signing_key_id=None
+        )
+        session.commit()
+
+        fetched = PopulationFindingRepository().get(session, record.id)
+
+    assert record.parameters_used is None
+    assert fetched is not None
+    assert fetched.parameters_used is None
+
+
+def test_parameters_used_round_trips_a_real_dict(db_engine) -> None:
+    system_id = _new_system_id(db_engine)
+    finding = _finding(system_id, parameters_used={"threshold": 0.75, "minimum_group_size": 30.0})
+
+    with Session(db_engine) as session:
+        record = PopulationFindingRepository().create(
+            session, finding, signature=None, signing_key_id=None
+        )
+        session.commit()
+
+        fetched = PopulationFindingRepository().get(session, record.id)
+
+    assert record.parameters_used == {"threshold": 0.75, "minimum_group_size": 30.0}
+    assert fetched is not None
+    assert fetched.parameters_used == {"threshold": 0.75, "minimum_group_size": 30.0}
+
+
 def test_as_population_finding_drops_signature_fields(db_engine) -> None:
     system_id = _new_system_id(db_engine)
     finding = _finding(system_id)

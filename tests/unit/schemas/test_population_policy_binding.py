@@ -39,3 +39,16 @@ def test_binding_carries_no_adapter_id() -> None:
     docs/milestones/M6.md §13.8."""
     assert "adapter_id" not in PopulationPolicyBinding.model_fields
     assert "system_id" in PopulationPolicyBinding.model_fields
+
+
+def test_parameters_defaults_to_an_empty_dict() -> None:
+    """M8 (docs/milestones/M8.md §4.3): empty means "use the policy's own
+    built-in defaults" -- every binding created before M8 has this
+    behavior unchanged."""
+    binding = _binding()
+    assert binding.parameters == {}
+
+
+def test_parameters_round_trips_a_real_dict() -> None:
+    binding = _binding(parameters={"threshold": 0.75})
+    assert binding.parameters == {"threshold": 0.75}

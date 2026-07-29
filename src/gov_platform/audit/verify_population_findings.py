@@ -19,6 +19,16 @@ valid signature would only prove the bytes weren't altered, not that
 identically-shaped, identically-signed-looking records for different
 reasons. See `schemas/population_finding.py`'s docstring.
 
+M8 (architecture §10): `population_finding_hash` dumps with
+`exclude_none=True`, specifically so `parameters_used` — `None` for every
+`PopulationFinding` signed before this field existed — is omitted from
+the hashed payload for those records exactly as it always was, rather
+than appearing as a new `null` key that would change their recomputed
+hash and break their already-issued signatures. A finding computed from
+M8 onward always has a real, non-`None` `parameters_used`, so this only
+ever changes the payload for records that predate the field. See
+`docs/milestones/M8.md` §4.5/§13.18.
+
 Mirrors `audit/verify_chain.py`'s shape: a pure core (`verify_population_findings`,
 no database dependency, fully unit-testable with hand-built records
 including deliberately corrupted ones) plus a thin, Postgres-dependent CLI
@@ -57,8 +67,17 @@ class PopulationFindingVerificationResult(BaseModel):
 def population_finding_hash(finding: PopulationFinding) -> str:
     """A plain content hash over `finding`'s own canonical payload --
     deliberately not `hash_chain.compute_hash` (no chain, no previous
-    record to fold in; see this module's docstring)."""
-    return hashlib.sha256(canonical_json(finding.model_dump(mode="json")).encode()).hexdigest()
+    record to fold in; see this module's docstring).
+
+    `exclude_none=True` (M8): `parameters_used` is `None` for every
+    finding signed before this field existed, and must dump to exactly
+    the same payload shape those records were originally hashed and
+    signed under -- a payload with no `parameters_used` key at all, not
+    one with an explicit `null`. See this module's docstring and
+    `docs/milestones/M8.md` §4.5/§13.18."""
+    return hashlib.sha256(
+        canonical_json(finding.model_dump(mode="json", exclude_none=True)).encode()
+    ).hexdigest()
 
 
 def verify_population_findings(

@@ -1,0 +1,23 @@
+-- Point-in-time reproducibility for admin-configurable population-policy
+-- parameters -- architecture §10, M8. Mirrors classification_snapshot's
+-- own reproducibility fix (migration 0015): a finding embeds the exact
+-- effective parameter values it was computed against, immune to a later
+-- change to its binding.
+--
+-- Nullable, with NO DEFAULT and NO backfill -- this is deliberate, not an
+-- oversight. population_findings is signed (audit/verify_population_findings.py
+-- hashes the *entire* model via finding.model_dump(mode="json")), and
+-- every row created before this migration was signed over a payload with
+-- no parameters_used key at all. Backfilling a value here (e.g. '{}')
+-- would change what that historical payload dumps to, changing its
+-- recomputed hash, and silently invalidating every pre-M8 finding's
+-- signature the next time verify_population_findings runs -- see
+-- docs/milestones/M8.md §4.5/§13.18. NULL for a pre-M8 row means, only
+-- and exactly, "not tracked" -- population_finding_hash's
+-- exclude_none=True (audit/verify_population_findings.py) reproduces the
+-- original, key-absent payload for these rows. Every finding computed
+-- from M8 onward always carries a real, non-NULL value, enforced in
+-- application code (each concrete PopulationPolicy always populates it),
+-- not by a database-level NOT NULL -- the column must legitimately hold
+-- NULL forever for these append-only, never-rewritten historical rows.
+ALTER TABLE population_findings ADD COLUMN parameters_used TEXT;
