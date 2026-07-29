@@ -35,6 +35,18 @@ its own repositories directly, the same way `plugins/seed_registry.py`
 always has, rather than going through this FastAPI-specific module).
 `get_system_repository` (M1) is now also used by the Population Policy
 Bindings Admin API, to validate `system_id` before creating a binding.
+
+M9: `get_verdict_repository`, `get_verdict_review_repository`, and
+`get_population_finding_review_repository` are new — needed by the two new
+Human Review Workflow Admin API surfaces
+(`api/admin/verdict_reviews.py`/`api/admin/population_finding_reviews.py`).
+`get_verdict_repository` is new even though `VerdictRepository` itself
+isn't (`EvidenceStore` has always constructed its own internally) — this is
+the first Admin API surface that needs to *read* a `Verdict` at all, and
+`audit/evidence_store.py`'s own `_queue_verdict_review` constructs its own
+`VerdictReviewRepository` directly rather than through this module, the
+same way `population_engine/run_policies.py` always has for its own
+`PopulationFindingReviewRepository`.
 """
 
 from __future__ import annotations
@@ -46,12 +58,17 @@ from gov_platform.audit.evidence_store import EvidenceStore
 from gov_platform.db.repositories.plugin_registration import PluginRegistrationRepository
 from gov_platform.db.repositories.policy_binding import PolicyBindingRepository
 from gov_platform.db.repositories.population_finding import PopulationFindingRepository
+from gov_platform.db.repositories.population_finding_review import (
+    PopulationFindingReviewRepository,
+)
 from gov_platform.db.repositories.population_policy_binding import (
     PopulationPolicyBindingRepository,
 )
 from gov_platform.db.repositories.protected_attribute_rule import ProtectedAttributeRuleRepository
 from gov_platform.db.repositories.shadow_finding import ShadowFindingRepository
 from gov_platform.db.repositories.system import SystemRepository
+from gov_platform.db.repositories.verdict import VerdictRepository
+from gov_platform.db.repositories.verdict_review import VerdictReviewRepository
 from gov_platform.normalization.service import NormalizationService
 
 
@@ -113,4 +130,23 @@ def get_population_policy_binding_repository(
 
 def get_population_finding_repository(request: Request) -> PopulationFindingRepository:
     repository: PopulationFindingRepository = request.app.state.population_finding_repository
+    return repository
+
+
+def get_verdict_repository(request: Request) -> VerdictRepository:
+    repository: VerdictRepository = request.app.state.verdict_repository
+    return repository
+
+
+def get_verdict_review_repository(request: Request) -> VerdictReviewRepository:
+    repository: VerdictReviewRepository = request.app.state.verdict_review_repository
+    return repository
+
+
+def get_population_finding_review_repository(
+    request: Request,
+) -> PopulationFindingReviewRepository:
+    repository: PopulationFindingReviewRepository = (
+        request.app.state.population_finding_review_repository
+    )
     return repository

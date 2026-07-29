@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gov-platform"
-version = "0.9.0"
-description = "Domain-agnostic AI Governance Platform (V2) — M8: Evaluation Framework, a second population-level policy and admin-configurable parameters."
+version = "0.10.0"
+description = "Domain-agnostic AI Governance Platform (V2) — M9: Human Review Workflow for escalated verdicts and flagged population findings."
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [

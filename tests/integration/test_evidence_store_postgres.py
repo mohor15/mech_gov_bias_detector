@@ -22,16 +22,19 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from gov_platform.audit.evidence_store import EvidenceStore
+from gov_platform.db.models import VerdictReviewRow
 from gov_platform.db.repositories.decision_event import DecisionEventRepository
 from gov_platform.db.repositories.protected_attribute_resolution import (
     ProtectedAttributeResolutionRepository,
 )
 from gov_platform.db.repositories.system import SystemRepository
 from gov_platform.db.repositories.verdict import VerdictRepository
+from gov_platform.db.repositories.verdict_review import VerdictReviewRepository
 from gov_platform.schemas.finding import Finding, FindingOutcome
 from gov_platform.schemas.protected_attribute import ProtectedAttributeClassification
 from gov_platform.schemas.verdict import GovernanceVerdict, VerdictStatus
@@ -324,3 +327,93 @@ def test_append_persists_all_findings_from_a_multi_policy_verdict_in_order(
         "direct-attribute-in-inputs",
         "high-debt-ratio-gate",
     ]
+
+
+def _reviewable_verdict(
+    decision_event_id: str, verdict_id: str, status: VerdictStatus
+) -> GovernanceVerdict:
+    finding = Finding(
+        finding_id=f"find-{verdict_id}",
+        decision_event_id=decision_event_id,
+        policy_id="high-debt-ratio-gate",
+        policy_version="0.1.0",
+        outcome=FindingOutcome.FLAGGED,
+        confidence=1.0,
+        rationale="test",
+        metric_values={},
+        evaluated_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    return GovernanceVerdict(
+        verdict_id=verdict_id,
+        decision_event_id=decision_event_id,
+        status=status,
+        findings=[finding],
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
+def _verdict_review_row(db_engine, verdict_id: str) -> VerdictReviewRow | None:
+    with Session(db_engine) as session:
+        return session.execute(
+            select(VerdictReviewRow).where(VerdictReviewRow.verdict_id == verdict_id)
+        ).scalar_one_or_none()
+
+
+@pytest.mark.parametrize(
+    "status", [VerdictStatus.ESCALATE_FOR_REVIEW, VerdictStatus.RECOMMEND_HOLD]
+)
+def test_append_auto_creates_an_open_verdict_review_for_a_reviewable_status(
+    evidence_store: EvidenceStore, make_decision_event, db_engine, status: VerdictStatus
+) -> None:
+    """docs/milestones/M9.md §3.4/§9.1: both ESCALATE_FOR_REVIEW and
+    RECOMMEND_HOLD create a review, automatically, as part of `append`."""
+    event = make_decision_event(event_id=_unique_event_id())
+    verdict_id = str(uuid4())
+
+    evidence_store.append(event, _reviewable_verdict(event.event_id, verdict_id, status))
+
+    row = _verdict_review_row(db_engine, verdict_id)
+    assert row is not None
+    assert row.status == "OPEN"
+
+
+@pytest.mark.parametrize("status", [VerdictStatus.ALLOW, VerdictStatus.ALLOW_WITH_FLAG])
+def test_append_does_not_create_a_verdict_review_for_a_non_reviewable_status(
+    evidence_store: EvidenceStore, make_decision_event, db_engine, status: VerdictStatus
+) -> None:
+    event = make_decision_event(event_id=_unique_event_id())
+    verdict_id = str(uuid4())
+
+    evidence_store.append(event, _reviewable_verdict(event.event_id, verdict_id, status))
+
+    assert _verdict_review_row(db_engine, verdict_id) is None
+
+
+def test_a_failure_creating_the_verdict_review_does_not_fail_the_append(
+    make_decision_event, db_engine, monkeypatch
+) -> None:
+    """The headline hostile-review-pass correction (docs/milestones/M9.md
+    §3.4): a bug in this milestone's own new, non-essential workflow code
+    must never prevent the recording of a real, already-made governance
+    decision. Forces `VerdictReviewRepository.create` to raise and confirms
+    the evidence_chain/verdicts/findings rows are still fully committed --
+    `append` itself returns successfully, exactly as if review-row creation
+    had never been attempted."""
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("simulated review-row creation failure")
+
+    monkeypatch.setattr(VerdictReviewRepository, "create", _raise)
+
+    evidence_store = EvidenceStore(db_engine)
+    event = make_decision_event(event_id=_unique_event_id())
+    verdict_id = str(uuid4())
+
+    record = evidence_store.append(
+        event, _reviewable_verdict(event.event_id, verdict_id, VerdictStatus.ESCALATE_FOR_REVIEW)
+    )
+
+    assert record.sequence_number > 0
+    with Session(db_engine) as session:
+        assert VerdictRepository().get(session, verdict_id) is not None
+    assert _verdict_review_row(db_engine, verdict_id) is None  # the failed write left no row

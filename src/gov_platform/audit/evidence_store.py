@@ -52,11 +52,29 @@ deliberately does not make the same switch). And every appended record's
 `EvidenceRecord` gains `signature`/`signing_key_id`, both `None` for
 records written before M5 (see `schemas/verdict.py`'s docstring on why
 those are never rewritten).
+
+M9 (architecture §12): `append`'s own transaction — the same one every
+milestone since M2 has added a write to — is deliberately **not** where
+Human Review Workflow's `VerdictReview` row gets created. Every existing
+write in that transaction (`Finding`, `ProtectedAttributeResolution`, the
+signature) is part of what makes a governed decision *complete*; a
+`VerdictReview` is not — it's a downstream consumer's bookkeeping about an
+already-complete `Verdict`. Coupling its creation into the same
+transaction would let a bug in this new, non-essential code roll back the
+hash-chained evidence record for a real, already-made decision, the exact
+opposite of what this store exists to guarantee. Instead, `_queue_verdict_review`
+runs in its **own**, separate `Session`/transaction, called only after
+`append`'s own `session.commit()` has already succeeded, and swallows (logs,
+never re-raises) any failure of its own — see that method's docstring and
+`docs/milestones/M9.md` §3.4/§9 for the full reasoning, including the
+narrow race this reopens with `human_review/backfill_reviews.py` and why
+both use idempotent (`ON CONFLICT ... DO NOTHING`) upsert semantics.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -76,10 +94,14 @@ from gov_platform.db.repositories.protected_attribute_resolution import (
 )
 from gov_platform.db.repositories.system import SystemRepository
 from gov_platform.db.repositories.verdict import VerdictRepository
+from gov_platform.db.repositories.verdict_review import VerdictReviewRepository
 from gov_platform.protected_attributes.resolver import ProtectedAttributeResolver
 from gov_platform.schemas.decision_event import DecisionEvent
+from gov_platform.schemas.human_review import _REVIEWABLE_VERDICT_STATUSES
 from gov_platform.schemas.model_version import UNSPECIFIED_VERSION
 from gov_platform.schemas.verdict import GovernanceVerdict
+
+logger = logging.getLogger(__name__)
 
 # Arbitrary, stable key identifying "the evidence chain append critical
 # section" to Postgres's advisory-lock registry. Any fixed 64-bit integer
@@ -113,6 +135,7 @@ class EvidenceStore:
         *,
         resolver: ProtectedAttributeResolver | None = None,
         signer: EvidenceSigner | None = None,
+        verdict_review_repository: VerdictReviewRepository | None = None,
     ) -> None:
         self._engine = engine
         self._system_repo = SystemRepository()
@@ -123,6 +146,7 @@ class EvidenceStore:
         self._protected_attribute_repo = ProtectedAttributeResolutionRepository()
         self._resolver = resolver or ProtectedAttributeResolver(engine=engine)
         self._signer = signer or load_signer(None)
+        self._verdict_review_repo = verdict_review_repository or VerdictReviewRepository()
 
     def append(self, decision_event: DecisionEvent, verdict: GovernanceVerdict) -> EvidenceRecord:
         """Persist one Decision Event + Verdict pair, atomically, as the
@@ -174,6 +198,10 @@ class EvidenceStore:
             session.commit()
             session.refresh(chain_row)
 
+            # M9: a separate transaction, deliberately not this one -- see
+            # this module's docstring and `_queue_verdict_review`'s own.
+            self._queue_verdict_review(verdict)
+
             return EvidenceRecord(
                 sequence_number=chain_row.sequence_number,
                 decision_event_id=chain_row.decision_event_id,
@@ -184,6 +212,33 @@ class EvidenceStore:
                 recorded_at=chain_row.recorded_at,
                 signature=chain_row.signature,
                 signing_key_id=chain_row.signing_key_id,
+            )
+
+    def _queue_verdict_review(self, verdict: GovernanceVerdict) -> None:
+        """Creates a `VerdictReview` for `verdict`, if its `status`
+        qualifies, in a brand-new `Session` — never the one `append`'s own
+        commit just used. Any failure here (a bug, a transient DB error, a
+        race with `human_review/backfill_reviews.py` that a plain `INSERT`
+        would have raised on — see `VerdictReviewRepository.create`'s
+        idempotent-upsert docstring) is logged and swallowed, never
+        propagated: the evidence record this method is called after has
+        already committed successfully, and this platform's single most
+        important guarantee (every governed decision gets recorded) must
+        never depend on this milestone's own new, non-essential workflow
+        code succeeding. The resulting gap (a qualifying `Verdict` with no
+        review row yet) is exactly what the reconciliation tool exists to
+        close — see `docs/milestones/M9.md` §3.4/§3.5.
+        """
+        if verdict.status not in _REVIEWABLE_VERDICT_STATUSES:
+            return
+        try:
+            with Session(self._engine) as review_session:
+                self._verdict_review_repo.create(review_session, verdict.verdict_id)
+                review_session.commit()
+        except Exception:
+            logger.exception(
+                "verdict_review_creation_failed",
+                extra={"extra_fields": {"verdict_id": verdict.verdict_id}},
             )
 
     def get(self, sequence_number: int) -> EvidenceRecord | None:

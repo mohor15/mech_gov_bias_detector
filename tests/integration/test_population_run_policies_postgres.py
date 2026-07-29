@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from gov_platform.audit.signing import load_signer
@@ -16,8 +17,12 @@ from gov_platform.audit.verify_population_findings import (
     population_finding_hash,
     verify_population_findings,
 )
+from gov_platform.db.models import PopulationFindingReviewRow
 from gov_platform.db.repositories.plugin_registration import PluginRegistrationRepository
 from gov_platform.db.repositories.population_finding import PopulationFindingRepository
+from gov_platform.db.repositories.population_finding_review import (
+    PopulationFindingReviewRepository,
+)
 from gov_platform.db.repositories.population_policy_binding import (
     PopulationPolicyBindingRepository,
 )
@@ -353,3 +358,103 @@ def test_default_window_run_does_not_error_with_no_active_bindings(postgres_url)
     # it (there may be zero active bindings entirely, which is fine).
     exit_code = main(["--database-url", postgres_url])
     assert exit_code in (0, 1)
+
+
+def _population_finding_review_row(db_engine, population_finding_id: str):
+    with Session(db_engine) as session:
+        return session.execute(
+            select(PopulationFindingReviewRow).where(
+                PopulationFindingReviewRow.population_finding_id == population_finding_id
+            )
+        ).scalar_one_or_none()
+
+
+def test_a_flagged_finding_auto_creates_an_open_population_finding_review(
+    postgres_url, db_engine, seed_finance_decisions
+) -> None:
+    """docs/milestones/M9.md §3.4: a FLAGGED finding gets a review,
+    created in its own separate transaction after the finding's own
+    commit."""
+    system_id = seed_finance_decisions(
+        [
+            ({"race": "Black"}, True, _IN_WINDOW),
+            *[({"race": "Black"}, False, _IN_WINDOW) for _ in range(39)],
+            *[({"race": "White"}, True, _IN_WINDOW) for _ in range(40)],
+        ]
+    )
+    with Session(db_engine) as session:
+        PopulationPolicyBindingRepository().create(
+            session, system_id=system_id, population_policy_id="adverse-impact-ratio"
+        )
+        session.commit()
+
+    exit_code = _run(postgres_url)
+
+    assert exit_code == 0
+    with Session(db_engine) as session:
+        findings = PopulationFindingRepository().list_for_system(session, system_id)
+    assert findings[0].outcome.value == "FLAGGED"
+
+    row = _population_finding_review_row(db_engine, findings[0].id)
+    assert row is not None
+    assert row.status == "OPEN"
+
+
+def test_a_clear_finding_does_not_create_a_population_finding_review(
+    postgres_url, db_engine, seed_finance_decisions
+) -> None:
+    system_id = seed_finance_decisions(
+        [
+            ({"race": "Black"}, True, _IN_WINDOW),
+            ({"race": "White"}, True, _IN_WINDOW),
+        ]
+    )
+    with Session(db_engine) as session:
+        PopulationPolicyBindingRepository().create(
+            session, system_id=system_id, population_policy_id="adverse-impact-ratio"
+        )
+        session.commit()
+
+    exit_code = _run(postgres_url)
+
+    assert exit_code == 0
+    with Session(db_engine) as session:
+        findings = PopulationFindingRepository().list_for_system(session, system_id)
+    assert findings[0].outcome.value == "CLEAR"
+    assert _population_finding_review_row(db_engine, findings[0].id) is None
+
+
+def test_a_failure_creating_the_population_finding_review_does_not_fail_the_run(
+    postgres_url, db_engine, seed_finance_decisions, monkeypatch
+) -> None:
+    """Mirrors `test_evidence_store_postgres.py`'s identical regression
+    test for `_queue_verdict_review` -- applied here for consistency
+    (docs/milestones/M9.md §3.4): a bug in review-row creation must never
+    turn a real, already-computed finding into a reported ERROR."""
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("simulated review-row creation failure")
+
+    monkeypatch.setattr(PopulationFindingReviewRepository, "create", _raise)
+
+    system_id = seed_finance_decisions(
+        [
+            ({"race": "Black"}, True, _IN_WINDOW),
+            *[({"race": "Black"}, False, _IN_WINDOW) for _ in range(39)],
+            *[({"race": "White"}, True, _IN_WINDOW) for _ in range(40)],
+        ]
+    )
+    with Session(db_engine) as session:
+        PopulationPolicyBindingRepository().create(
+            session, system_id=system_id, population_policy_id="adverse-impact-ratio"
+        )
+        session.commit()
+
+    exit_code = _run(postgres_url)
+
+    assert exit_code == 0  # a review-row failure is not a reported ERROR
+    with Session(db_engine) as session:
+        findings = PopulationFindingRepository().list_for_system(session, system_id)
+    assert len(findings) == 1
+    assert findings[0].outcome.value == "FLAGGED"  # the finding itself still committed
+    assert _population_finding_review_row(db_engine, findings[0].id) is None

@@ -41,11 +41,25 @@ M8 (architecture §10): each binding's own admin-configured `parameters`
 are attached onto its window immediately before `evaluate()` is called,
 not threaded through `build_population_window` itself, which stays
 generic and binding-unaware — see `docs/milestones/M8.md` §4.3/§13.2.
+
+M9 (architecture §12): immediately after a `FLAGGED` finding's own
+transaction commits, a `PopulationFindingReview` is created in a
+**separate** transaction — the identical "decoupled, idempotent,
+never-fails-the-more-important-write" pattern
+`audit/evidence_store.py`'s `_queue_verdict_review` uses for `Verdict`,
+applied here for consistency even though this batch job's existing
+per-binding failure isolation already made the original (rejected)
+same-transaction coupling comparatively low-risk — a review-row failure
+here just means this window's finding isn't committed this run and gets
+cleanly recomputed on the next invocation, never a caller-facing failure
+with no retry contract the way a live ingestion request would have. See
+`docs/milestones/M9.md` §3.4.
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from datetime import UTC, datetime, timedelta
 
@@ -57,6 +71,9 @@ from gov_platform.audit.verify_population_findings import population_finding_has
 from gov_platform.config.settings import get_settings
 from gov_platform.db.repositories.plugin_registration import PluginRegistrationRepository
 from gov_platform.db.repositories.population_finding import PopulationFindingRepository
+from gov_platform.db.repositories.population_finding_review import (
+    PopulationFindingReviewRepository,
+)
 from gov_platform.db.repositories.population_policy_binding import (
     PopulationPolicyBindingRepository,
 )
@@ -66,7 +83,10 @@ from gov_platform.plugins.bootstrap import bootstrap_plugins
 from gov_platform.plugins.sandbox import run_sandboxed
 from gov_platform.population_engine.window import build_population_window
 from gov_platform.schemas.plugin_registration import PluginLifecycleState, PluginType
+from gov_platform.schemas.population_finding import PopulationFindingOutcome
 from gov_platform.schemas.population_policy_binding import PopulationPolicyBinding
+
+logger = logging.getLogger(__name__)
 
 
 def default_window(as_of: datetime | None = None) -> tuple[datetime, datetime]:
@@ -89,6 +109,7 @@ def run_population_policy_binding(
     window_end: datetime,
     plugin_registration_repository: PluginRegistrationRepository,
     population_finding_repository: PopulationFindingRepository,
+    population_finding_review_repository: PopulationFindingReviewRepository,
     signer: EvidenceSigner,
 ) -> str:
     """Evaluate one binding for `[window_start, window_end)`. Returns a
@@ -148,10 +169,41 @@ def run_population_policy_binding(
                 f"[{window_start.isoformat()}, {window_end.isoformat()}) already computed"
             )
 
+    # M9: a separate transaction, deliberately not the one above -- see
+    # this module's docstring and `_queue_population_finding_review`'s own.
+    _queue_population_finding_review(
+        engine, record.id, record.outcome, population_finding_review_repository
+    )
+
     return (
         f"FINDING {binding.system_id} -> {binding.population_policy_id}: "
         f"{record.outcome.value} [{window_start.date()}, {window_end.date()})"
     )
+
+
+def _queue_population_finding_review(
+    engine: Engine,
+    population_finding_id: str,
+    outcome: PopulationFindingOutcome,
+    population_finding_review_repository: PopulationFindingReviewRepository,
+) -> None:
+    """Creates a `PopulationFindingReview` for `population_finding_id`, if
+    `outcome` qualifies, in a brand-new `Session` — never the one the
+    finding's own commit just used. Any failure here is logged and
+    swallowed, never propagated to the caller: mirrors
+    `audit/evidence_store.py`'s `_queue_verdict_review` exactly, applied
+    here for consistency (`docs/milestones/M9.md` §3.4)."""
+    if outcome is not PopulationFindingOutcome.FLAGGED:
+        return
+    try:
+        with Session(engine) as review_session:
+            population_finding_review_repository.create(review_session, population_finding_id)
+            review_session.commit()
+    except Exception:
+        logger.exception(
+            "population_finding_review_creation_failed",
+            extra={"extra_fields": {"population_finding_id": population_finding_id}},
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -181,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
     plugin_registration_repository = PluginRegistrationRepository()
     population_policy_binding_repository = PopulationPolicyBindingRepository()
     population_finding_repository = PopulationFindingRepository()
+    population_finding_review_repository = PopulationFindingReviewRepository()
 
     with Session(engine) as session:
         bindings = population_policy_binding_repository.list_active(session)
@@ -196,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
                     window_end=window_end,
                     plugin_registration_repository=plugin_registration_repository,
                     population_finding_repository=population_finding_repository,
+                    population_finding_review_repository=population_finding_review_repository,
                     signer=signer,
                 )
             )

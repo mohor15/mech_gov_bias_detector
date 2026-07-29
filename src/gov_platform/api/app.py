@@ -49,6 +49,19 @@ function already builds. Neither endpoint's own module needs its own
 `app.state` entry (unlike every repository above): `observability/metrics.py`'s
 query functions take an `Engine` directly, the same way
 `population_engine/window.py`'s do.
+
+M9: three more repositories (`VerdictRepository`, `VerdictReviewRepository`,
+`PopulationFindingReviewRepository`) and two more Admin API routers
+(`admin_verdict_reviews`, `admin_population_finding_reviews`), same
+pattern — see `docs/milestones/M9.md`. `EvidenceStore` gains its own,
+separately-constructed `VerdictReviewRepository` (passed in below, not
+looked up from `app.state`), since it needs one regardless of whether the
+Human Review Workflow Admin API is ever called — the two repository
+instances are structurally independent (both stateless, so sharing one
+instance would be equally correct, but passing two keeps `EvidenceStore`'s
+own construction self-contained, the same way it already builds its own
+`ProtectedAttributeResolver`/`EvidenceSigner` rather than reading them off
+`app.state`).
 """
 
 from __future__ import annotations
@@ -62,10 +75,12 @@ from gov_platform.api import health, readiness
 from gov_platform.api.admin import metrics as admin_metrics
 from gov_platform.api.admin import plugins as admin_plugins
 from gov_platform.api.admin import policy_bindings as admin_policy_bindings
+from gov_platform.api.admin import population_finding_reviews as admin_population_finding_reviews
 from gov_platform.api.admin import population_findings as admin_population_findings
 from gov_platform.api.admin import population_policy_bindings as admin_population_policy_bindings
 from gov_platform.api.admin import protected_attribute_rules as admin_protected_attribute_rules
 from gov_platform.api.admin import systems as admin_systems
+from gov_platform.api.admin import verdict_reviews as admin_verdict_reviews
 from gov_platform.api.ingestion.routes import build_ingestion_router
 from gov_platform.api.middleware import MaxBodySizeMiddleware
 from gov_platform.audit.evidence_store import EvidenceStore
@@ -74,12 +89,17 @@ from gov_platform.config.settings import Settings, get_settings
 from gov_platform.db.repositories.plugin_registration import PluginRegistrationRepository
 from gov_platform.db.repositories.policy_binding import PolicyBindingRepository
 from gov_platform.db.repositories.population_finding import PopulationFindingRepository
+from gov_platform.db.repositories.population_finding_review import (
+    PopulationFindingReviewRepository,
+)
 from gov_platform.db.repositories.population_policy_binding import (
     PopulationPolicyBindingRepository,
 )
 from gov_platform.db.repositories.protected_attribute_rule import ProtectedAttributeRuleRepository
 from gov_platform.db.repositories.shadow_finding import ShadowFindingRepository
 from gov_platform.db.repositories.system import SystemRepository
+from gov_platform.db.repositories.verdict import VerdictRepository
+from gov_platform.db.repositories.verdict_review import VerdictReviewRepository
 from gov_platform.db.session import create_db_engine
 from gov_platform.normalization.service import NormalizationService
 from gov_platform.observability.logging import configure_logging
@@ -107,10 +127,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     signer = load_signer(
         resolved_settings.SIGNING_PRIVATE_KEY, key_id=resolved_settings.SIGNING_KEY_ID
     )
+    verdict_review_repository = VerdictReviewRepository()
 
     app.state.normalization_service = NormalizationService()
     app.state.db_engine = db_engine
-    app.state.evidence_store = EvidenceStore(db_engine, signer=signer)
+    app.state.evidence_store = EvidenceStore(
+        db_engine, signer=signer, verdict_review_repository=verdict_review_repository
+    )
     app.state.system_repository = SystemRepository()
     app.state.plugin_registration_repository = PluginRegistrationRepository()
     app.state.shadow_finding_repository = ShadowFindingRepository()
@@ -118,6 +141,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.protected_attribute_rule_repository = ProtectedAttributeRuleRepository()
     app.state.population_policy_binding_repository = PopulationPolicyBindingRepository()
     app.state.population_finding_repository = PopulationFindingRepository()
+    app.state.verdict_repository = VerdictRepository()
+    app.state.verdict_review_repository = verdict_review_repository
+    app.state.population_finding_review_repository = PopulationFindingReviewRepository()
 
     app.include_router(health.router)
     app.include_router(readiness.router)
@@ -129,6 +155,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_population_policy_bindings.router, prefix="/v1/admin")
     app.include_router(admin_population_findings.router, prefix="/v1/admin")
     app.include_router(admin_metrics.router, prefix="/v1/admin")
+    app.include_router(admin_verdict_reviews.router, prefix="/v1/admin")
+    app.include_router(admin_population_finding_reviews.router, prefix="/v1/admin")
 
     @app.exception_handler(PluginTimeoutError)
     async def plugin_timeout_handler(request: Request, exc: PluginTimeoutError) -> JSONResponse:

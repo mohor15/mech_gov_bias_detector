@@ -94,7 +94,15 @@
       "Bash(docker rm *)",
       "Bash(docker run *)",
       "Bash(powershell -Command \"Get-Process 'Docker Desktop' -ErrorAction SilentlyContinue\")",
-      "Bash(powershell -Command \"Test-Path 'C:\\\\Program Files\\\\Docker\\\\Docker\\\\Docker Desktop.exe'\")"
+      "Bash(powershell -Command \"Test-Path 'C:\\\\Program Files\\\\Docker\\\\Docker\\\\Docker Desktop.exe'\")",
+      "Bash(docker version *)",
+      "Bash(python -m pytest tests/unit/schemas/test_human_review.py -q)",
+      "Bash(python -m pytest tests/integration/test_verdict_reviews_postgres.py -q)",
+      "Bash(python -m pytest tests/integration/test_population_finding_reviews_postgres.py -q)",
+      "Bash(python -m pytest tests/integration/test_admin_verdict_reviews_api.py tests/integration/test_admin_population_finding_reviews_api.py -q)",
+      "Bash(python -m pytest tests/integration/test_backfill_reviews_postgres.py -q)",
+      "Bash(python -m pytest tests/integration/test_evidence_store_postgres.py -q)",
+      "Bash(python -m pytest --collect-only -q)"
     ]
   }
 }

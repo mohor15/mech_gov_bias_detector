@@ -207,3 +207,43 @@ class PopulationFindingRow(Base):
     # 0015's REVOKE UPDATE, DELETE).
     signature: Mapped[str | None] = mapped_column(Text, nullable=True)
     signing_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class VerdictReviewRow(Base):
+    """M9: workflow state about one `Verdict` -- ordinary GRANT privileges
+    (mutable, unlike `evidence_chain`/`population_findings`'s lockdown); the
+    `Verdict` this references remains exactly as immutable as before. See
+    `docs/milestones/M9.md` §3.1/§3.2 and migration `0023`'s own comment.
+    """
+
+    __tablename__ = "verdict_reviews"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    verdict_id: Mapped[str] = mapped_column(String, ForeignKey("verdicts.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    reviewer: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolution_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PopulationFindingReviewRow(Base):
+    """M9: mirrors `VerdictReviewRow` exactly, for one `PopulationFinding`
+    instead of one `Verdict` -- see that class's docstring and
+    migration `0024`'s own comment."""
+
+    __tablename__ = "population_finding_reviews"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    population_finding_id: Mapped[str] = mapped_column(
+        String, ForeignKey("population_findings.id"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    reviewer: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolution_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
