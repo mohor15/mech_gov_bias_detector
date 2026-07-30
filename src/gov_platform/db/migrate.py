@@ -10,6 +10,19 @@ dialect-agnostic and is unit-tested locally against SQLite with generic
 fixture SQL — see `tests/unit/db/test_migrate.py`. The real migration
 content in `infra/migrations/` targets Postgres only (per the approved M1
 strategy) and is applied and verified in CI, not locally.
+
+M11: the bare-`postgresql://`-scheme driver normalization this CLI has
+always needed for `ADMIN_DATABASE_URL` (shared with
+`infra/ci/setup_test_role.py`, which needs the plain scheme for
+`psycopg.connect()`, so the env var itself can't be rewritten) now lives in
+`db.session.with_psycopg_driver` — moved there so `db.session.create_db_engine`
+gets the identical fix, after CI caught a real gap: nothing protected that
+function's own callers the same way this CLI already protected itself.
+This module still calls `create_engine` directly, not `create_db_engine`,
+and deliberately keeps that behavior unchanged (no bounded
+`connect_timeout` — see `db/session.py`'s own module docstring for why
+that timeout exists for the app's request-serving engine specifically, not
+for a supervised, one-shot migration run).
 """
 
 from __future__ import annotations
@@ -20,7 +33,8 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.engine.url import make_url
+
+from gov_platform.db.session import with_psycopg_driver as _with_psycopg_driver
 
 _TRACKING_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -63,24 +77,6 @@ def apply_migrations(engine: Engine, migrations_dir: Path) -> list[str]:
         newly_applied.append(migration_file.name)
 
     return newly_applied
-
-
-def _with_psycopg_driver(database_url: str) -> str:
-    """Force the `psycopg` (v3) driver for bare `postgresql://`/`postgres://`
-    URLs.
-
-    `ADMIN_DATABASE_URL` is shared with `infra/ci/setup_test_role.py`, which
-    hands it to `psycopg.connect()` directly — that call needs the plain
-    scheme, not a SQLAlchemy dialect suffix, so the shared env var can't
-    just be written as `postgresql+psycopg://`. SQLAlchemy's own default for
-    a bare `postgresql://` is `psycopg2`, which isn't a dependency of this
-    project (only `psycopg` is) and isn't installed, so left unnormalized
-    `create_engine` fails immediately with `ModuleNotFoundError`.
-    """
-    url = make_url(database_url)
-    if url.drivername in ("postgresql", "postgres"):
-        url = url.set(drivername="postgresql+psycopg")
-    return str(url.render_as_string(hide_password=False))
 
 
 def _default_migrations_dir() -> Path:
