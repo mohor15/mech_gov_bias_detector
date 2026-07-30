@@ -55,6 +55,46 @@ class Settings(BaseSettings):
     SIGNING_PRIVATE_KEY: str | None = None
     SIGNING_KEY_ID: str = "default"
 
+    # M11: a url-safe-base64-encoded 32-byte Fernet key
+    # (`cryptography.fernet.Fernet.generate_key()`'s own output), application-
+    # level-encrypting a fixed, named list of columns (see audit/encryption.py
+    # and docs/milestones/M11.md §5.1) that are never filtered, compared, or
+    # ordered by their own content in any SQL statement this codebase issues.
+    # `None` (the default) means encryption is off: those columns are stored
+    # and read as plaintext, exactly as every milestone before this one
+    # already does. Deliberately diverging from `SIGNING_PRIVATE_KEY`'s own
+    # precedent in two respects, both corrected/specified during this
+    # milestone's own third hostile-review pass (see docs/milestones/M11.md
+    # §5.1/§12.4/§12.17): (1) its encoding is Fernet's own base64 format, not
+    # `SIGNING_PRIVATE_KEY`'s hex convention -- a raw hex string here raises
+    # at first use, not silently; (2) there is no ephemeral, auto-generated
+    # fallback when unset -- a fresh, per-process encryption key would
+    # encrypt real data under a key that exists nowhere durable, losing
+    # access to it on the next process restart, an unrecoverable,
+    # self-inflicted data-loss bug a signing key's identical-looking fallback
+    # does not share.
+    FIELD_ENCRYPTION_KEY: str | None = None
+
+    # M11: per-table retention windows (in days) for the two tables this
+    # milestone classifies as retention-eligible -- shadow_findings and
+    # protected_attribute_resolutions, the only tables in this schema that
+    # are simultaneously non-evidentiary and not locked against deletion at
+    # the database-privilege level (see docs/milestones/M11.md §5.2). `None`
+    # (the default for both) means retention is disabled for that table --
+    # retention/purge_expired_records.py's own CLI, invoked with no
+    # configured window for a table, is a clean no-op for it, logged as
+    # such. Deliberately no numeric default for either: unlike this
+    # platform's other governance-sensitive constants (the EEOC four-fifths
+    # ratio, the CFPB debt-to-income threshold, the Castaneda z-critical
+    # convention), no external standard exists for how long a shadow-policy
+    # comparison or a protected-attribute classification may legitimately
+    # persist -- an operational/legal/business decision specific to a real
+    # deployment, not one this platform can source a defensible number for
+    # (see docs/milestones/M11.md §5.2, corrected during this milestone's
+    # own hostile-review pass from an earlier, unsourced 90/365-day draft).
+    RETENTION_DAYS_SHADOW_FINDINGS: int | None = None
+    RETENTION_DAYS_PROTECTED_ATTRIBUTE_RESOLUTIONS: int | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

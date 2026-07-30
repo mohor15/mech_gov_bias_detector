@@ -27,6 +27,19 @@ requires_postgres = pytest.mark.skipif(
     reason="POSTGRES_URL not set — needs a real Postgres instance; see docs/milestones/M1.md",
 )
 
+# M11: the retention tool's own elevated, migration-owner connection
+# (docs/milestones/M11.md §5.2/§12.11) — distinct from POSTGRES_URL's
+# restricted gov_platform_app role, which (as of migration 0026) has no
+# DELETE privilege on either retention-eligible table at all. The same
+# connection CI already uses to apply migrations (infra/ci/setup_test_role.py).
+ADMIN_DATABASE_URL = os.environ.get("ADMIN_DATABASE_URL")
+
+requires_admin_postgres = pytest.mark.skipif(
+    ADMIN_DATABASE_URL is None,
+    reason="ADMIN_DATABASE_URL not set — needs an elevated Postgres connection; "
+    "see docs/milestones/M11.md §5.2",
+)
+
 # A syntactically valid but unreachable placeholder, used only by tests that
 # construct a Settings/app instance without ever needing a successful DB
 # round trip (SQLAlchemy engines are lazy — see EvidenceStore's docstring).
@@ -134,6 +147,22 @@ def postgres_url() -> str:
 @pytest.fixture
 def db_engine(postgres_url: str) -> Engine:
     return create_db_engine(postgres_url)
+
+
+@pytest.fixture
+def admin_database_url() -> str:
+    """Skips the requesting test if ADMIN_DATABASE_URL isn't set. Prefer the
+    `requires_admin_postgres` marker on integration tests; use this fixture
+    when a test needs the URL value itself (e.g. to build an engine for the
+    retention tool's own elevated connection)."""
+    if ADMIN_DATABASE_URL is None:
+        pytest.skip("ADMIN_DATABASE_URL not set")
+    return ADMIN_DATABASE_URL
+
+
+@pytest.fixture
+def admin_db_engine(admin_database_url: str) -> Engine:
+    return create_db_engine(admin_database_url)
 
 
 @pytest.fixture

@@ -53,6 +53,21 @@ deliberately does not make the same switch). And every appended record's
 records written before M5 (see `schemas/verdict.py`'s docstring on why
 those are never rewritten).
 
+M11 (architecture §13): `append` gains an optional `encryptor` collaborator
+(`audit/encryption.py`) — hash-then-encrypt, not encrypt-then-hash:
+`record_hash` is computed over the **plaintext** canonical payload exactly
+as before, unchanged; only the resulting JSON string is then encrypted
+before being written to the `payload` column. `_to_model` decrypts first
+(a `"gpenc1:"` marker distinguishes ciphertext from a pre-M11 plaintext
+row — see `audit/encryption.py`), then proceeds to `json.loads` exactly as
+today. A decrypt failure raises `FieldDecryptionError` and is never
+papered over with a placeholder: `payload` is evidentiary content, not a
+display field — see `docs/milestones/M11.md` §5.1. The same `encryptor` is
+threaded into `ProtectedAttributeResolutionRepository` (its own
+`proxy_basis` column is in M11's encrypted-field list) and into the
+default-constructed `VerdictReviewRepository`, so a caller that doesn't
+supply its own pre-wired repository still gets a self-consistent store.
+
 M9 (architecture §12): `append`'s own transaction — the same one every
 milestone since M2 has added a write to — is deliberately **not** where
 Human Review Workflow's `VerdictReview` row gets created. Every existing
@@ -83,6 +98,12 @@ from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from gov_platform.audit.encryption import (
+    FieldDecryptionError,
+    FieldEncryptor,
+    NoOpFieldEncryptor,
+    decrypt_field,
+)
 from gov_platform.audit.hash_chain import GENESIS_HASH, canonical_json, compute_hash
 from gov_platform.audit.signing import EvidenceSigner, load_signer
 from gov_platform.db.models import EvidenceChainRow
@@ -136,17 +157,23 @@ class EvidenceStore:
         resolver: ProtectedAttributeResolver | None = None,
         signer: EvidenceSigner | None = None,
         verdict_review_repository: VerdictReviewRepository | None = None,
+        encryptor: FieldEncryptor | None = None,
     ) -> None:
         self._engine = engine
+        self._encryptor = encryptor or NoOpFieldEncryptor()
         self._system_repo = SystemRepository()
         self._model_version_repo = ModelVersionRepository()
         self._decision_event_repo = DecisionEventRepository()
         self._finding_repo = FindingRepository()
         self._verdict_repo = VerdictRepository(self._finding_repo)
-        self._protected_attribute_repo = ProtectedAttributeResolutionRepository()
+        self._protected_attribute_repo = ProtectedAttributeResolutionRepository(
+            encryptor=self._encryptor
+        )
         self._resolver = resolver or ProtectedAttributeResolver(engine=engine)
         self._signer = signer or load_signer(None)
-        self._verdict_review_repo = verdict_review_repository or VerdictReviewRepository()
+        self._verdict_review_repo = verdict_review_repository or VerdictReviewRepository(
+            encryptor=self._encryptor
+        )
 
     def append(self, decision_event: DecisionEvent, verdict: GovernanceVerdict) -> EvidenceRecord:
         """Persist one Decision Event + Verdict pair, atomically, as the
@@ -180,14 +207,20 @@ class EvidenceStore:
                 self._protected_attribute_repo.create(session, resolution)
 
             previous_hash = self._latest_hash(session)
+            # Hash-then-encrypt, not encrypt-then-hash: record_hash commits
+            # to the plaintext payload, unchanged from every milestone
+            # before M11 -- only the resulting JSON string is encrypted
+            # before it's written below. See this module's docstring and
+            # docs/milestones/M11.md §5.1.
             record_hash = compute_hash(previous_hash, payload_json)
             recorded_at = datetime.now(UTC)
             signature = self._signer.sign(record_hash)
+            encrypted_payload = self._encryptor.encrypt(payload_json)
 
             chain_row = EvidenceChainRow(
                 decision_event_id=decision_event.event_id,
                 verdict_id=verdict.verdict_id,
-                payload=payload_json,
+                payload=encrypted_payload,
                 previous_hash=previous_hash,
                 record_hash=record_hash,
                 recorded_at=recorded_at,
@@ -261,13 +294,30 @@ class EvidenceStore:
         ).scalar_one_or_none()
         return latest.record_hash if latest is not None else GENESIS_HASH
 
-    @staticmethod
-    def _to_model(row: EvidenceChainRow) -> EvidenceRecord:
+    def _to_model(self, row: EvidenceChainRow) -> EvidenceRecord:
+        """Decrypts first (a `"gpenc1:"` marker distinguishes ciphertext
+        from a pre-M11 plaintext row -- `decrypt_field` falls through to
+        returning `row.payload` unchanged when it isn't marked), then
+        parses exactly as before M11. A decrypt failure raises
+        `FieldDecryptionError` -- deliberately not caught here: `payload`
+        is evidentiary content, not a display field, and must surface as a
+        loud, specific, actionable failure rather than being papered over
+        with a placeholder (docs/milestones/M11.md §5.1/§12.15). Wrapped
+        with the failing record's own `sequence_number` so a caller (e.g.
+        `verify_chain_from_database`) can report which record could not be
+        read, without needing per-record streaming from `all()`."""
+        try:
+            payload_json = decrypt_field(row.payload, self._encryptor)
+        except FieldDecryptionError as exc:
+            raise FieldDecryptionError(
+                f"evidence_chain record {row.sequence_number}: cannot decrypt payload "
+                "(FIELD_ENCRYPTION_KEY missing or incorrect)"
+            ) from exc
         return EvidenceRecord(
             sequence_number=row.sequence_number,
             decision_event_id=row.decision_event_id,
             verdict_id=row.verdict_id,
-            payload=json.loads(row.payload),
+            payload=json.loads(payload_json),
             previous_hash=row.previous_hash,
             record_hash=row.record_hash,
             recorded_at=row.recorded_at,

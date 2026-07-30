@@ -28,6 +28,7 @@ reach that handler, see `api/admin/verdict_reviews.py`).
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -36,6 +37,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
+from gov_platform.audit.encryption import (
+    UNREADABLE_PLACEHOLDER,
+    FieldDecryptionError,
+    FieldEncryptor,
+    NoOpFieldEncryptor,
+    decrypt_field,
+)
 from gov_platform.db.models import VerdictReviewRow, VerdictRow
 from gov_platform.schemas.human_review import (
     VerdictReview,
@@ -44,8 +52,21 @@ from gov_platform.schemas.human_review import (
 )
 from gov_platform.schemas.verdict import VerdictStatus
 
+logger = logging.getLogger(__name__)
+
 
 class VerdictReviewRepository:
+    def __init__(self, *, encryptor: FieldEncryptor | None = None) -> None:
+        """`encryptor` application-level-encrypts `resolution_notes` (M11,
+        architecture §13) -- free text, never referenced in any
+        `WHERE`/`GROUP BY`/`ORDER BY` clause in this repository or
+        `api/admin/verdict_reviews.py`, unlike `reviewer` (see this
+        module's own `resolve()` docstring for why that column cannot be
+        encrypted at all). Defaults to `NoOpFieldEncryptor` -- encryption
+        off, the same "unset means off" shape every other M11 collaborator
+        uses (docs/milestones/M11.md §5.1)."""
+        self._encryptor = encryptor or NoOpFieldEncryptor()
+
     def create(self, session: Session, verdict_id: str) -> VerdictReview | None:
         """Creates an `OPEN` review for `verdict_id`, unless an *active*
         (non-`RESOLVED`) one already exists, in which case this is a
@@ -190,6 +211,7 @@ class VerdictReviewRepository:
         -> `ValueError`; the caller does not need to distinguish which one
         occurred (`docs/milestones/M9.md` §3.3/§7)."""
         now = datetime.now(UTC)
+        encrypted_notes = self._encryptor.encrypt(notes)
         statement = (
             update(VerdictReviewRow)
             .where(
@@ -200,7 +222,7 @@ class VerdictReviewRepository:
             .values(
                 status=VerdictReviewStatus.RESOLVED.value,
                 resolution=resolution.value,
-                resolution_notes=notes,
+                resolution_notes=encrypted_notes,
                 resolved_at=now,
             )
         )
@@ -216,16 +238,38 @@ class VerdictReviewRepository:
         assert row is not None  # just updated above, in this same transaction
         return self._to_model(row)
 
-    @staticmethod
-    def _to_model(row: VerdictReviewRow) -> VerdictReview:
+    def _to_model(self, row: VerdictReviewRow) -> VerdictReview:
         return VerdictReview(
             id=row.id,
             verdict_id=row.verdict_id,
             status=VerdictReviewStatus(row.status),
             reviewer=row.reviewer,
             resolution=VerdictReviewResolution(row.resolution) if row.resolution else None,
-            resolution_notes=row.resolution_notes,
+            resolution_notes=self._decrypt_resolution_notes(row.id, row.resolution_notes),
             created_at=row.created_at,
             claimed_at=row.claimed_at,
             resolved_at=row.resolved_at,
         )
+
+    def _decrypt_resolution_notes(self, review_id: str, value: str | None) -> str | None:
+        """Per-record containment, mirroring
+        `human_review/backfill_reviews.py`'s own "one record's failure is
+        logged and counted, never allowed to abort reconciling the rest"
+        discipline (`docs/milestones/M9.md` §3.5), applied here to a
+        read-time decrypt failure rather than a write-time reconciliation
+        one -- see docs/milestones/M11.md §5.1/§12.15. `resolution_notes`
+        is free text a caller controls (these endpoints remain
+        unauthenticated, per M9's own review), not evidentiary content
+        like `evidence_chain.payload`: a decrypt failure here degrades to
+        `UNREADABLE_PLACEHOLDER` for this one field, never crashes the
+        whole list response."""
+        if value is None:
+            return None
+        try:
+            return decrypt_field(value, self._encryptor)
+        except FieldDecryptionError:
+            logger.warning(
+                "verdict_review_resolution_notes_undecryptable",
+                extra={"extra_fields": {"review_id": review_id}},
+            )
+            return UNREADABLE_PLACEHOLDER

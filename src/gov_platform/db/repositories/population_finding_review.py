@@ -10,6 +10,7 @@ parameter on `list_all`: `PopulationFindingOutcome` is already binary
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -18,6 +19,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
+from gov_platform.audit.encryption import (
+    UNREADABLE_PLACEHOLDER,
+    FieldDecryptionError,
+    FieldEncryptor,
+    NoOpFieldEncryptor,
+    decrypt_field,
+)
 from gov_platform.db.models import PopulationFindingReviewRow
 from gov_platform.schemas.human_review import (
     PopulationFindingReview,
@@ -25,8 +33,17 @@ from gov_platform.schemas.human_review import (
     PopulationFindingReviewStatus,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class PopulationFindingReviewRepository:
+    def __init__(self, *, encryptor: FieldEncryptor | None = None) -> None:
+        """`encryptor` application-level-encrypts `resolution_notes` (M11,
+        architecture §13) -- mirrors `VerdictReviewRepository`'s own
+        `encryptor` exactly, see that class's docstring for the full
+        reasoning."""
+        self._encryptor = encryptor or NoOpFieldEncryptor()
+
     def create(
         self, session: Session, population_finding_id: str
     ) -> PopulationFindingReview | None:
@@ -141,6 +158,7 @@ class PopulationFindingReviewRepository:
         notes: str,
     ) -> PopulationFindingReview:
         now = datetime.now(UTC)
+        encrypted_notes = self._encryptor.encrypt(notes)
         statement = (
             update(PopulationFindingReviewRow)
             .where(
@@ -151,7 +169,7 @@ class PopulationFindingReviewRepository:
             .values(
                 status=PopulationFindingReviewStatus.RESOLVED.value,
                 resolution=resolution.value,
-                resolution_notes=notes,
+                resolution_notes=encrypted_notes,
                 resolved_at=now,
             )
         )
@@ -168,8 +186,7 @@ class PopulationFindingReviewRepository:
         assert row is not None  # just updated above, in this same transaction
         return self._to_model(row)
 
-    @staticmethod
-    def _to_model(row: PopulationFindingReviewRow) -> PopulationFindingReview:
+    def _to_model(self, row: PopulationFindingReviewRow) -> PopulationFindingReview:
         return PopulationFindingReview(
             id=row.id,
             population_finding_id=row.population_finding_id,
@@ -178,8 +195,23 @@ class PopulationFindingReviewRepository:
             resolution=(
                 PopulationFindingReviewResolution(row.resolution) if row.resolution else None
             ),
-            resolution_notes=row.resolution_notes,
+            resolution_notes=self._decrypt_resolution_notes(row.id, row.resolution_notes),
             created_at=row.created_at,
             claimed_at=row.claimed_at,
             resolved_at=row.resolved_at,
         )
+
+    def _decrypt_resolution_notes(self, review_id: str, value: str | None) -> str | None:
+        """Per-record containment -- mirrors
+        `VerdictReviewRepository._decrypt_resolution_notes` exactly, see
+        that method's docstring for the full reasoning."""
+        if value is None:
+            return None
+        try:
+            return decrypt_field(value, self._encryptor)
+        except FieldDecryptionError:
+            logger.warning(
+                "population_finding_review_resolution_notes_undecryptable",
+                extra={"extra_fields": {"review_id": review_id}},
+            )
+            return UNREADABLE_PLACEHOLDER

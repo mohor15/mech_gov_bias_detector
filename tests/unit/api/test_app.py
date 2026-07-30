@@ -6,12 +6,16 @@ left open by never registering one).
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
+import pytest
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from gov_platform.api.app import create_app
 from gov_platform.api.dependencies import get_evidence_store
+from gov_platform.audit.encryption import FernetFieldEncryptor, NoOpFieldEncryptor
 from gov_platform.audit.evidence_store import EvidenceRecord
 from gov_platform.config.settings import Settings
 from gov_platform.schemas.decision_event import DecisionEvent
@@ -67,3 +71,79 @@ def test_create_app_wires_independent_instances() -> None:
     app_b = create_app(settings=settings_b)
 
     assert app_a.state.evidence_store is not app_b.state.evidence_store
+
+
+# --- M11: encryption wiring -------------------------------------------------
+
+
+def _parsed_json_log_lines(captured_err: str) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in captured_err.splitlines() if line.strip()]
+
+
+def test_field_encryption_key_unset_logs_a_warning_not_info(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # docs/milestones/M11.md §5.1/§9: this platform has no persisted way to
+    # distinguish "never configured" from "just disabled" -- a WARNING on
+    # every affected startup is the cheapest available mitigation, and
+    # deliberately not the quieter INFO level. `configure_logging` (called
+    # by create_app) replaces the root logger's handlers with its own JSON
+    # StreamHandler (see observability/logging.py) -- that handler writes
+    # to stderr, not through pytest's caplog (which loses its own handler
+    # in that replacement), so log assertions here go through capsys.
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://unreachable-c:5432/c", FIELD_ENCRYPTION_KEY=None
+    )
+
+    create_app(settings=settings)
+
+    log_lines = _parsed_json_log_lines(capsys.readouterr().err)
+    assert any(
+        line["message"] == "field_encryption_key_unset_encryption_disabled"
+        and line["level"] == "WARNING"
+        for line in log_lines
+    )
+
+
+def test_field_encryption_key_set_does_not_log_the_unset_warning(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://unreachable-d:5432/d",
+        FIELD_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"),
+    )
+
+    create_app(settings=settings)
+
+    log_lines = _parsed_json_log_lines(capsys.readouterr().err)
+    assert not any(
+        line["message"] == "field_encryption_key_unset_encryption_disabled" for line in log_lines
+    )
+
+
+def test_create_app_wires_a_no_op_encryptor_when_key_is_unset() -> None:
+    settings = Settings(DATABASE_URL="postgresql+psycopg://unreachable-e:5432/e")
+
+    app = create_app(settings=settings)
+
+    assert isinstance(app.state.evidence_store._encryptor, NoOpFieldEncryptor)
+    assert isinstance(app.state.verdict_review_repository._encryptor, NoOpFieldEncryptor)
+    assert isinstance(app.state.population_finding_review_repository._encryptor, NoOpFieldEncryptor)
+
+
+def test_create_app_wires_a_real_encryptor_when_key_is_set() -> None:
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://unreachable-f:5432/f",
+        FIELD_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"),
+    )
+
+    app = create_app(settings=settings)
+
+    assert isinstance(app.state.evidence_store._encryptor, FernetFieldEncryptor)
+    assert isinstance(app.state.verdict_review_repository._encryptor, FernetFieldEncryptor)
+    assert isinstance(
+        app.state.population_finding_review_repository._encryptor, FernetFieldEncryptor
+    )
+    # EvidenceStore and the Admin API share the same VerdictReviewRepository
+    # instance (unchanged since M9) -- proven directly, not merely typed.
+    assert app.state.evidence_store._verdict_review_repo is app.state.verdict_review_repository

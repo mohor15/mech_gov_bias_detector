@@ -77,6 +77,20 @@ taking `/healthz` down with it — see `docs/milestones/M10.md` §4.3/§4.4/
 §8.6 and `api/dashboard.py`'s own docstring for the full reasoning. A
 dashboard packaging failure must degrade to "no dashboard," never "no
 application."
+
+M11: one `FieldEncryptor` (`audit/encryption.py`) is built here from
+`Settings.FIELD_ENCRYPTION_KEY` and threaded into every repository that
+touches an M11-encrypted column — `EvidenceStore` (`payload`), the shared
+`VerdictReviewRepository` (`resolution_notes`, and, via `EvidenceStore`,
+`proxy_basis` on its internal `ProtectedAttributeResolutionRepository`),
+and `PopulationFindingReviewRepository` (`resolution_notes`) — the same
+"construct once, pass to every collaborator that needs it" pattern this
+function already uses for `db_engine`/`signer`. `FIELD_ENCRYPTION_KEY`
+unset is logged at `WARNING`, not `INFO` (docs/milestones/M11.md §5.1): a
+deliberate choice, since this platform has no way to distinguish
+"encryption has never been configured" from "encryption was just
+disabled" without new, out-of-scope machinery, and a quieter log level
+would make that regression easier to miss.
 """
 
 from __future__ import annotations
@@ -99,6 +113,7 @@ from gov_platform.api.admin import verdict_reviews as admin_verdict_reviews
 from gov_platform.api.dashboard import register_dashboard
 from gov_platform.api.ingestion.routes import build_ingestion_router
 from gov_platform.api.middleware import MaxBodySizeMiddleware
+from gov_platform.audit.encryption import load_encryptor
 from gov_platform.audit.evidence_store import EvidenceStore
 from gov_platform.audit.signing import load_signer
 from gov_platform.config.settings import Settings, get_settings
@@ -143,12 +158,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     signer = load_signer(
         resolved_settings.SIGNING_PRIVATE_KEY, key_id=resolved_settings.SIGNING_KEY_ID
     )
-    verdict_review_repository = VerdictReviewRepository()
+    if resolved_settings.FIELD_ENCRYPTION_KEY is None:
+        # Not INFO: this platform has no persisted way to tell "encryption
+        # was never configured" apart from "encryption was just disabled
+        # after being enabled" -- a WARNING on every affected startup is
+        # the cheapest available mitigation against that regression passing
+        # unnoticed (docs/milestones/M11.md §5.1/§9).
+        logger.warning("field_encryption_key_unset_encryption_disabled")
+    encryptor = load_encryptor(resolved_settings.FIELD_ENCRYPTION_KEY)
+    verdict_review_repository = VerdictReviewRepository(encryptor=encryptor)
 
     app.state.normalization_service = NormalizationService()
     app.state.db_engine = db_engine
     app.state.evidence_store = EvidenceStore(
-        db_engine, signer=signer, verdict_review_repository=verdict_review_repository
+        db_engine,
+        signer=signer,
+        verdict_review_repository=verdict_review_repository,
+        encryptor=encryptor,
     )
     app.state.system_repository = SystemRepository()
     app.state.plugin_registration_repository = PluginRegistrationRepository()
@@ -159,7 +185,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.population_finding_repository = PopulationFindingRepository()
     app.state.verdict_repository = VerdictRepository()
     app.state.verdict_review_repository = verdict_review_repository
-    app.state.population_finding_review_repository = PopulationFindingReviewRepository()
+    app.state.population_finding_review_repository = PopulationFindingReviewRepository(
+        encryptor=encryptor
+    )
 
     app.include_router(health.router)
     app.include_router(readiness.router)

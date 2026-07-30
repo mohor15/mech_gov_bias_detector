@@ -13,6 +13,18 @@ its `record_hash` (`audit/signing.py`) — a genuinely different guarantee
 than the hash chain alone provides (see that module's docstring).
 Records with no signature (written before M5) are skipped, not failed —
 signing applies going forward only, see `schemas/verdict.py`'s docstring.
+
+M11 (architecture §13): given an `--encryption-key`, `verify_chain_from_database`
+constructs its own `EvidenceStore` with a real `FieldEncryptor`
+(`audit/encryption.py`), so `store.all()` can decrypt `payload` before this
+module's hash-recomputation logic ever sees it — that logic itself needs
+no change, since it already operates on the decrypted
+`EvidenceRecord.payload` dict, never on raw column bytes. If `store.all()`
+raises `FieldDecryptionError` (no key given, the wrong key, or corrupted
+ciphertext), that is caught here and reported as its own, distinct
+`ChainVerificationResult` — clearly worded to distinguish "cannot be read"
+from an actual hash-mismatch tamper finding — rather than propagating as
+an unhandled crash. See `docs/milestones/M11.md` §5.1/§12.5.
 """
 
 from __future__ import annotations
@@ -23,6 +35,7 @@ from collections.abc import Sequence
 
 from pydantic import BaseModel
 
+from gov_platform.audit.encryption import FieldDecryptionError, load_encryptor
 from gov_platform.audit.evidence_store import EvidenceRecord, EvidenceStore
 from gov_platform.audit.hash_chain import GENESIS_HASH, canonical_json, compute_hash
 from gov_platform.audit.signing import verify_signature
@@ -93,11 +106,30 @@ def verify_chain(
 
 
 def verify_chain_from_database(
-    database_url: str, *, public_key_hex: str | None = None
+    database_url: str, *, public_key_hex: str | None = None, encryption_key: str | None = None
 ) -> ChainVerificationResult:
+    """`encryption_key` is `Settings.FIELD_ENCRYPTION_KEY`'s own value —
+    required whenever the deployment being verified has encryption
+    enabled (§5.1/§9): `EvidenceStore` needs it to decrypt `payload`
+    before this module's hash-recomputation logic can run at all. Omitting
+    it against an encrypted deployment does not crash uncontrolled — it is
+    caught below and reported as a clean, distinct `ChainVerificationResult`."""
     engine = create_db_engine(database_url)
-    store = EvidenceStore(engine)
-    return verify_chain(store.all(), public_key_hex=public_key_hex)
+    encryptor = load_encryptor(encryption_key)
+    store = EvidenceStore(engine, encryptor=encryptor)
+    try:
+        records = store.all()
+    except FieldDecryptionError as exc:
+        # `EvidenceStore.all()` decrypts every row before returning any of
+        # them (see that method's docstring), so a decrypt failure is
+        # caught here, wrapping the whole fetch, rather than inside
+        # verify_chain()'s own per-record hash-checking loop -- the
+        # failing record's own sequence_number is still named in `str(exc)`
+        # (see EvidenceStore._to_model), so the result stays specific and
+        # actionable even though `checked_count` cannot reflect partial
+        # hash-verification progress that never got to run.
+        return ChainVerificationResult(valid=False, checked_count=0, detail=str(exc))
+    return verify_chain(records, public_key_hex=public_key_hex)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -110,9 +142,20 @@ def main(argv: list[str] | None = None) -> int:
         "(see `python -m gov_platform.audit.signing --private-key ...`). "
         "Omit to check only the hash chain.",
     )
+    parser.add_argument(
+        "--encryption-key",
+        required=False,
+        help="FIELD_ENCRYPTION_KEY value (a Fernet key, see "
+        '`python -c "from cryptography.fernet import Fernet; '
+        'print(Fernet.generate_key().decode())"`), required whenever the deployment '
+        "being verified has application-level field encryption enabled. Omit if "
+        "encryption was never configured.",
+    )
     args = parser.parse_args(argv)
 
-    result = verify_chain_from_database(args.database_url, public_key_hex=args.public_key)
+    result = verify_chain_from_database(
+        args.database_url, public_key_hex=args.public_key, encryption_key=args.encryption_key
+    )
     print(f"checked {result.checked_count} record(s): {result.detail}")
     return 0 if result.valid else 1
 

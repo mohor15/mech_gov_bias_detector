@@ -1,38 +1,49 @@
-# AI Governance Platform — M10: Compliance Dashboard
+# AI Governance Platform — M11: Encryption at Rest, Retention Tiers & Privilege Classification
 
 A domain-agnostic observation-and-evaluation layer for LLM copilots, classical
 ML models, rule engines, and hybrid decision systems. This repository
 implements the frozen V2 architecture (`ARCH-GOV-002`) incrementally, per the
 frozen implementation plan (`IMPL-GOV-001`).
 
-**Current milestone: M10.** Delivers architecture §11 ("Compliance
-Dashboard"): a small set of read-only HTML views rendering data M6/M7/M9
-already compute and already expose via JSON — system/governance health, the
-population-findings table, and the Human Review Workflow queue — for a
-human to actually look at, rather than only reachable via `curl`. Static
-HTML/CSS/vanilla JavaScript, served from the existing FastAPI app, fetching
-the same JSON endpoints every other client already uses. **Zero new
-endpoints, zero new database tables, zero new external dependencies** — no
-SPA framework, no build tooling, no server-side templating engine, no new
-plugin port. This is the first milestone whose entire job is presentation,
-not computation, and the first UI this platform has ever built — see
+**Current milestone: M11.** Completes architecture §13 ("Audit System")
+with the three things every milestone since M0 has pointed at and never
+built: **application-level encryption at rest** for a fixed, named list of
+columns proven never to participate in any SQL comparison
+(`evidence_chain.payload`, both review tables' `resolution_notes`,
+`protected_attribute_resolutions.proxy_basis`); **retention tiers** for the
+two tables that are simultaneously non-evidentiary and privilege-unlockable
+(`shadow_findings`, `protected_attribute_resolutions`); and **privilege
+classification** closing a gap M9 disclosed and left open — extending the
+`evidence_chain`-style `REVOKE UPDATE, DELETE` lockdown to `systems`,
+`model_versions`, `decision_events`, `findings`, `verdicts`, and
+`verdict_findings`. Adds no new computation and (with two purely-additive
+migrations) almost no new persisted state — its job is entirely about how
+already-computed data is protected while it exists and removed once it no
+longer needs to be. **Zero new external dependencies** — the `cryptography`
+package this platform already depends on (added at M5 for signing) is
+sufficient for the Fernet-based field encryption this milestone adds. See
 [`docs/architecture-mapping.md`](docs/architecture-mapping.md) for exactly
 what each module does and does not yet do, and
-[`docs/milestones/M10.md`](docs/milestones/M10.md) for the full design
-review, its own hostile-review record (findings, corrections, final
-approval, and freeze), and production-readiness report.
+[`docs/milestones/M11.md`](docs/milestones/M11.md) for the full design
+review, its own three-pass hostile-review record, and production-readiness
+report.
 
-> **Do not point this milestone at real applicant/subject data.** The
-> Evidence Store (and `protected_attribute_resolutions`) has no encryption
-> at rest and no retention controls yet (M11), and there is still no auth in
-> front of any endpoint — including the ten M9 Human Review Workflow
-> endpoints and the dashboard below. M10 does not increase the platform's
-> *technical* exposure (the JSON was already reachable via `curl`), but it
-> does remove the last remaining friction between "data is technically
-> reachable" and "data is immediately, legibly visible to a casual visitor
-> in a browser, with no login screen at all" — the single most
-> consequential production-readiness fact this milestone has to report.
-> Still M13. Synthetic data only.
+> **Do not point this platform at real applicant/subject data.** Both new
+> M11 protections are **opt-in and off by default**: application-level
+> encryption only takes effect once an operator explicitly sets
+> `GOV_PLATFORM_FIELD_ENCRYPTION_KEY`, and retention only runs against a
+> table once an operator explicitly sets that table's own
+> `RETENTION_DAYS_*` setting **and** invokes the purge CLI (there is no
+> daemon/scheduler). A fresh deployment has neither configured, and stores
+> everything exactly as every milestone before M11 already did. Storage-
+> level encryption of the underlying Postgres volume — the literal, standard
+> reading of "encryption at rest" — remains an infrastructure requirement
+> this repository documents but cannot itself provision or verify (see
+> below). And there is still no auth in front of any endpoint — including
+> the ten M9 Human Review Workflow endpoints and the M10 dashboard.
+> Encryption protects confidentiality against a compromised credential or
+> an unencrypted backup; it does nothing about *authorization to read*
+> through the API, which remains wide open. Still M13. Synthetic data only.
 
 Version 1 (a single-domain prototype, superseded by this design) is preserved,
 unmodified, in [`legacy_v1/`](legacy_v1/) for reference.
@@ -400,6 +411,78 @@ missing the static assets) degrades to "no dashboard," never "no
 application" — see `docs/milestones/M10.md` §4.3/§8.6 and `api/dashboard.py`
 for how.
 
+**Encryption at rest, retention tiers & privilege classification (M11)** —
+application-level field encryption for a fixed, named list of columns
+(`evidence_chain.payload`, `verdict_reviews.resolution_notes`,
+`population_finding_reviews.resolution_notes`,
+`protected_attribute_resolutions.proxy_basis`), opt-in via one new setting:
+
+```bash
+# Generate a key -- must be Fernet's own format (32 url-safe-base64-encoded
+# bytes), NOT SIGNING_PRIVATE_KEY's hex convention. No bespoke CLI helper is
+# needed; Fernet.generate_key() already produces a ready-to-use value.
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+export GOV_PLATFORM_FIELD_ENCRYPTION_KEY="<the generated key>"
+```
+
+Unset (the default): those columns are stored and read as plaintext,
+exactly as every milestone before M11 already did, with a `WARNING`
+(not `INFO`) logged on every startup naming this. There is **no**
+ephemeral, auto-generated fallback the way `SIGNING_PRIVATE_KEY` has —
+a fresh, per-process encryption key would make already-encrypted data
+unrecoverable the moment the process restarts, an unrecoverable failure
+mode signing's own fallback doesn't share. Encryption applies going
+forward only — no backfill of any pre-M11 row; a version-prefix marker
+(`"gpenc1:"`) distinguishes ciphertext from legacy plaintext at read time,
+so turning the key on or off doesn't break reading older rows either way.
+
+Verifying the hash chain against an encryption-enabled deployment now needs
+the same key:
+
+```bash
+python -m gov_platform.audit.verify_chain --database-url "$GOV_PLATFORM_DATABASE_URL" \
+  --encryption-key "$GOV_PLATFORM_FIELD_ENCRYPTION_KEY"
+# Omitting --encryption-key against an encrypted chain fails cleanly with a
+# named "cannot decrypt" result, not a crash.
+```
+
+Retention deletes rows older than a per-table configured window from
+exactly two tables — `shadow_findings` and `protected_attribute_resolutions`,
+the only tables in this schema that are both non-evidentiary and not
+locked against deletion at the database-privilege level. Neither has a
+numeric default (no external standard exists to source one from, unlike
+the EEOC ratio or CFPB threshold this platform's other constants cite) —
+a table with no configured window is skipped entirely by the purge tool,
+logged as such:
+
+```bash
+export GOV_PLATFORM_RETENTION_DAYS_SHADOW_FINDINGS=90
+export GOV_PLATFORM_RETENTION_DAYS_PROTECTED_ATTRIBUTE_RESOLUTIONS=365
+
+# Requires DELETE privilege on both tables -- the app's own runtime role
+# (gov_platform_app) does not have it as of migration 0026. Use the same
+# admin/owner-privileged connection migrations use, never
+# GOV_PLATFORM_DATABASE_URL.
+python -m gov_platform.retention.purge_expired_records \
+  --database-url "postgresql://postgres:<password>@localhost:5432/gov_platform"
+# PURGED shadow_findings: 12 row(s) older than 2026-05-01T00:00:00+00:00 (90 day(s))
+# SKIP protected_attribute_resolutions: no retention window configured
+```
+
+No daemon, no in-process scheduler — an explicitly-invoked, idempotent
+tool, safe to run on any recurring cron/`CronJob` cadence an operator sets
+up themselves (deployment-topology scope, unchanged, still M13).
+
+**Migration `0025` needs a maintenance window** — unlike every other
+migration in this repository. `GRANT`/`REVOKE` acquires an `ACCESS
+EXCLUSIVE` lock in Postgres, and `0025` revokes `UPDATE`/`DELETE` on
+`decision_events`, `findings`, and `verdicts` — this platform's actual
+highest-throughput, request-path-critical tables. Apply it during a
+planned, low-traffic window; migration `0026` (the two retention tables'
+own privilege change plus their new indexes) carries no equivalent risk
+and needs none.
+
 ## Run with Docker
 
 ```bash
@@ -450,6 +533,18 @@ control, the same way a real operator would via the Admin API.
 CI always sets `POSTGRES_URL` (a real Postgres 16 service container) and
 enforces the coverage floor there — see `.github/workflows/ci.yml`.
 
+**M11**: a second, elevated connection (`ADMIN_DATABASE_URL`/
+`admin_database_url`/`admin_db_engine`, gated by the `@requires_admin_postgres`
+marker, same skip-cleanly-when-unset shape as `POSTGRES_URL`) is needed for
+the retention tool's own tests and for proving the privilege lockdown's
+positive control (the elevated connection can still delete; the restricted
+`gov_platform_app` role cannot). CI already sets this (the same connection
+migrations use); set it locally the same way to run those tests too:
+
+```bash
+export ADMIN_DATABASE_URL="postgresql://postgres:<password>@localhost:5432/gov_platform"
+```
+
 ## Development commands
 
 ```bash
@@ -480,10 +575,15 @@ src/gov_platform/
   plugins/             registry.py (in-process catalog), bootstrap.py (first-party imports),
                        sandbox.py (timeout + exception isolation), seed_registry.py (CLI)
   audit/               hash_chain.py (pure), evidence_store.py (Postgres), verify_chain.py,
-                       signing.py (Ed25519 evidence signing), verify_population_findings.py
+                       signing.py (Ed25519 evidence signing), verify_population_findings.py,
+                       encryption.py (M11 -- FieldEncryptor/NoOpFieldEncryptor, the gpenc1
+                       marker, decrypt_field; pure, no DB)
   human_review/        backfill_reviews.py -- the M9 reconciliation tool (CLI); everything
                        else Human Review Workflow needs fits the existing per-entity
                        schema/repository/API convention directly (see schemas/human_review.py)
+  retention/           purge_expired_records.py -- the M11 retention CLI (explicitly-invoked,
+                       idempotent, no daemon); deletes rows older than a configured window
+                       from shadow_findings/protected_attribute_resolutions only
   db/                  session.py, migrate.py, models.py, repositories/
   api/
     app.py             Composition root -- builds routes from the plugin registry
@@ -513,37 +613,44 @@ tests/integration/     Full HTTP/DB round-trip tests; most need @requires_postgr
 legacy_v1/             Superseded V1 prototype (reference only, not run)
 ```
 
-## What M10 deliberately does not include
+## What M11 deliberately does not include
 
 Every module has a docstring stating precisely which milestone owns the
-capability it doesn't yet have. The short version: any new backend
-computation (M10 renders what M0–M9 already computed — no new metric, no
-new population policy, no new review-workflow state), interactive
-claim/release/resolve actions from the dashboard itself (read-only for
-this milestone — `docs/milestones/M10.md` §8.1), a combined "dashboard
-summary" endpoint (three to four `fetch()` calls on a low-traffic internal
-tool is not a real performance problem today — §5), pagination on the
-endpoints the dashboard depends on (a real, pre-existing gap, confirmed
-out of M10's own additive scope — §7/§8.3), real-time push/auto-refresh/
-WebSockets (pull-only, matching M7/M9's identical restraint for their own
-surfaces), periodic report generation or export/download (M12 — a
-different cadence and audience, deliberately not blurred into this
-on-demand, interactive milestone), encryption at rest and retention (M11),
-a general "list all Verdicts"/"list all Findings" endpoint or view (M9's
-own declined scope, not reopened here), accessibility/mobile-responsiveness
-auditing (no milestone has named either as a requirement yet), browser-
-automation test coverage (Selenium/Playwright — declined; server-side
-route/static-asset tests instead, with the client-side JavaScript's own
-rendering correctness verified manually and named as an accepted gap —
-§8.5), real authentication on the dashboard or anywhere else (still M13,
-the eighth-consecutive-milestone gap, and — per the warning above — the
-first one concerning a human-readable web page rather than a JSON API),
-and multi-tenancy/multi-plane deployment/mTLS (M13, unchanged).
+capability it doesn't yet have. The short version: **no encryption of
+`decision_events.protected_attribute_refs`/`decision_output`** — the one
+deliberate, load-bearing exclusion this milestone is built around;
+`population_engine/window.py`'s SQL casts and groups by those columns
+directly, so an opaque ciphertext blob would silently break every
+population-policy finding (`docs/milestones/M11.md` §4.1). No encryption of
+`reviewer` on either review table or `protected_attribute_resolutions.attribute_name`
+— each participates in a repository-level SQL comparison
+(`resolve()`'s own equality check; `list_by_decision_event`'s `ORDER BY`)
+a non-deterministic cipher cannot survive; `reviewer` remains plaintext, a
+real, disclosed gap, not a cost-free exclusion. No key rotation or KMS/HSM
+custody for either the signing key or the new encryption key (unchanged
+M5 scope boundary, applied consistently). No retroactive encryption of any
+pre-M11 row (encryption applies going forward only, mirroring M5's own
+"no retroactive signing" precedent). No chain pruning/checkpointing for
+`evidence_chain`/`population_findings` — retention applies to exactly two
+tables, not "old data" in general; deleting from a hash-chained or
+signed-evidentiary table is either structurally destructive or would defeat
+the guarantee those tables exist to provide, and no legal retention-period
+requirement or storage-cost pressure has forced that harder question yet.
+No new Admin API surface for retention/encryption status (mirrors
+`run_policies.py`/`backfill_reviews.py`'s existing explicitly-invoked-CLI
+precedent). No provider-specific storage-encryption infrastructure-as-code
+(tier one is a documented deployment requirement this repository doesn't
+itself provision Postgres to implement). No real authentication anywhere
+(still M13, now a ninth-consecutive-milestone gap), and no
+multi-tenancy/multi-plane deployment/mTLS (M13, unchanged).
 
-## What remains after M10
+## What remains after M11
 
-See [`docs/milestones/M10.md`](docs/milestones/M10.md) for the full design
-review, its own hostile-review record, and production-readiness report. In
-short: M11 is encryption at rest and retention tiers; M12 is periodic
-report generation; M13 is authentication, multi-tenancy, and the several
-other cross-cutting gaps every milestone since M2 has named and left open.
+See [`docs/milestones/M11.md`](docs/milestones/M11.md) for the full design
+review, its three-pass hostile-review record, and production-readiness
+report. In short: M12 is periodic report generation; M13 is authentication,
+multi-tenancy, key rotation/KMS custody, and the several other cross-cutting
+gaps every milestone since M2 has named and left open. `evidence_chain`/
+`population_findings` chain-checkpointing (a prerequisite for ever pruning
+either) remains the single largest disclosed gap this platform carries,
+unassigned to any milestone until a concrete forcing requirement appears.

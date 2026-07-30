@@ -102,7 +102,10 @@
       "Bash(python -m pytest tests/integration/test_admin_verdict_reviews_api.py tests/integration/test_admin_population_finding_reviews_api.py -q)",
       "Bash(python -m pytest tests/integration/test_backfill_reviews_postgres.py -q)",
       "Bash(python -m pytest tests/integration/test_evidence_store_postgres.py -q)",
-      "Bash(python -m pytest --collect-only -q)"
+      "Bash(python -m pytest --collect-only -q)",
+      "Bash(env)",
+      "Bash(python -m pip show ruff mypy pytest)",
+      "PowerShell(& \"venv\\\\Scripts\\\\python.exe\" -m mypy --strict tests 2>&1 | Select-Object -First 100)"
     ]
   }
 }

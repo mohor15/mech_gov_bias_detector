@@ -1,4 +1,4 @@
-# Architecture → Module Mapping (M10)
+# Architecture → Module Mapping (M11)
 
 Onboarding reference: which `ARCH-GOV-002` component each module implements,
 and the precise boundary as of this milestone — what's real today vs. what's
@@ -18,11 +18,117 @@ which is the authoritative source; this table is the map, not the territory.
 | §10 Evaluation Framework | `population_engine/policies/adverse_impact_ratio.py`, `population_engine/policies/disparity_significance_test.py`, `population_engine/policies/_shared.py` | **Real as of M8.** Two concrete, genuinely different statistical tests (a ratio threshold and a significance test) plus admin-defined thresholds per binding — the two things `architecture-mapping.md`'s own M6-era citation named as missing. Still not a "bring your own statistical test" plugin surface beyond these two — that remains unscheduled until a concrete third need appears (see `docs/milestones/M8.md` §15). |
 | §11 Compliance Dashboard | `api/dashboard.py`, `api/dashboard_static/index.html`, `dashboard.css`, `dashboard.js` | **Real as of M10.** Three read-only HTML views (Overview, Population Findings, Review Queue) rendering data M6/M7/M9 already compute and already expose via JSON — static HTML/CSS/vanilla JavaScript, same origin, `fetch()` against existing endpoints only. No new endpoint, no new table, no new external dependency, no build step. First UI this platform has ever built — see M10-specific notes. |
 | §12 Human Review Workflow | `schemas/human_review.py`, `db/repositories/verdict_review.py`, `db/repositories/population_finding_review.py`, `api/admin/verdict_reviews.py`, `api/admin/population_finding_reviews.py`, `human_review/backfill_reviews.py` | **Real as of M9.** An `ESCALATE_FOR_REVIEW`/`RECOMMEND_HOLD` `GovernanceVerdict` (M5) and a `FLAGGED` `PopulationFinding` from either population policy (M6/M8) each get a reopenable `OPEN → IN_REVIEW → RESOLVED` workflow record (`VerdictReview`/`PopulationFindingReview`), created automatically in a transaction separate from the write it depends on, plus a five-endpoint Admin API to list/claim/release/resolve them and a standing, idempotent reconciliation tool covering both historical and live-path gaps. No new plugin port, no UI (M10), no notification mechanism, no reviewer authentication, no signing of the resolution itself — see M9-specific notes. |
-| §13 Audit System | `audit/hash_chain.py`, `audit/evidence_store.py`, `audit/verify_chain.py`, `audit/signing.py`, `audit/verify_population_findings.py` | Real hash-chained Postgres ledger for per-event evidence, append-only enforced at the database-privilege level, plus a standalone chain-verification job/CLI — unchanged by M6/M8/M9. **New in M6**: `population_findings` gets the identical append-only privilege lockdown (`REVOKE UPDATE, DELETE`, migration `0015`) and is signed (reusing `audit/signing.py` unchanged) — but is **not chained** into `evidence_chain` (no `previous_hash`, no single `decision_event_id` it belongs to). `audit/verify_population_findings.py` is a separate, parallel verifier — a plain content hash over each finding's own canonical payload (including `classification_snapshot`), not `hash_chain`'s chained variant. **New in M8**: `population_finding_hash` dumps with `exclude_none=True`, so `parameters_used` (nullable, un-backfilled, migration `0021`) is omitted from the hashed payload for every finding signed before this field existed, rather than changing their recomputed hash and silently invalidating their already-issued signatures — the first time this codebase has added a field to an already-populated signed model (see `docs/milestones/M8.md` §4.5/§13.18). Key rotation/KMS custody and retention tiers remain unassigned/M11 for both. **M9 deliberately does not extend this system**: `verdict_reviews`/`population_finding_reviews` are ordinary, unsigned, mutable workflow state, not evidentiary records — the `Verdict`/`PopulationFinding` each references remains exactly as signed/chained/immutable as before; whether a review's resolution should itself become signed evidence was a real, approved-as-deferred decision, not an oversight (`docs/milestones/M9.md` §9.2). |
+| §13 Audit System | `audit/hash_chain.py`, `audit/evidence_store.py`, `audit/verify_chain.py`, `audit/signing.py`, `audit/verify_population_findings.py`, `audit/encryption.py` | Real hash-chained Postgres ledger for per-event evidence, append-only enforced at the database-privilege level, plus a standalone chain-verification job/CLI — unchanged by M6/M8/M9. **New in M6**: `population_findings` gets the identical append-only privilege lockdown (`REVOKE UPDATE, DELETE`, migration `0015`) and is signed (reusing `audit/signing.py` unchanged) — but is **not chained** into `evidence_chain` (no `previous_hash`, no single `decision_event_id` it belongs to). `audit/verify_population_findings.py` is a separate, parallel verifier — a plain content hash over each finding's own canonical payload (including `classification_snapshot`), not `hash_chain`'s chained variant. **New in M8**: `population_finding_hash` dumps with `exclude_none=True`, so `parameters_used` (nullable, un-backfilled, migration `0021`) is omitted from the hashed payload for every finding signed before this field existed, rather than changing their recomputed hash and silently invalidating their already-issued signatures — the first time this codebase has added a field to an already-populated signed model (see `docs/milestones/M8.md` §4.5/§13.18). **M9 deliberately does not extend this system**: `verdict_reviews`/`population_finding_reviews` are ordinary, unsigned, mutable workflow state, not evidentiary records — the `Verdict`/`PopulationFinding` each references remains exactly as signed/chained/immutable as before; whether a review's resolution should itself become signed evidence was a real, approved-as-deferred decision, not an oversight (`docs/milestones/M9.md` §9.2). **New in M11 — encryption at rest is real**: application-level field encryption (`audit/encryption.py`, `FernetFieldEncryptor`/`NoOpFieldEncryptor`) for a fixed, named list of columns proven never SQL-compared — `evidence_chain.payload` (hash-then-encrypt: `record_hash` still commits to the plaintext payload, unchanged), `verdict_reviews`/`population_finding_reviews`' `resolution_notes`, and `protected_attribute_resolutions.proxy_basis`. Opt-in via `Settings.FIELD_ENCRYPTION_KEY`, no ephemeral fallback (unlike signing). `verify_chain.py` gains `--encryption-key`; a decrypt failure is a specific, catchable `FieldDecryptionError`, never an unhandled crash. Key rotation/KMS custody remain unassigned, still deferred, for both the signing key and the new encryption key — see M11-specific notes. |
 | §14 Reporting | *(not yet built)* | M12. |
-| §15 APIs | `api/health.py`, `api/readiness.py`, `api/ingestion/routes.py`, `api/admin/systems.py`, `api/admin/plugins.py`, `api/admin/policy_bindings.py`, `api/admin/protected_attribute_rules.py`, `api/admin/population_policy_bindings.py`, `api/admin/population_findings.py`, `api/admin/metrics.py`, `api/admin/verdict_reviews.py`, `api/admin/population_finding_reviews.py`, `api/app.py`, `api/asgi.py` | Ingestion routes are registry-generated (one per registered adapter — currently `synthetic` and `credit-scorecard`), **unchanged by M7/M8/M9**, same response shape; `/healthz` also unchanged. `GET /readyz` and `GET /v1/admin/metrics` (M7) unchanged by M8/M9 — M9 declined to extend the metrics endpoint with review-queue-depth counts, directly on M8's own precedent of not reopening M7's frozen module for unrelated new state. **New in M9**: ten endpoints across two new routers (`verdict-reviews`, `population-finding-reviews`; `list`/`get`/`claim`/`release`/`resolve` each) — read-only except for the three workflow-transition actions, which never load new code or compute a new result, the same boundary every Admin API in this codebase draws. `claim`/`release`/`resolve` translate a repository-raised `ValueError` conflict into a `409` via an explicit handler in each route, not the codebase's existing global `ValueError → 422` handler. No endpoint anywhere has authentication yet, including these ten — the same standing gap M5/M6/M7/M8 named, now a sixth-consecutive-milestone-and-counting gap, sharpened here more than ever: this is the first milestone where an unauthenticated caller can fabricate a specific, named person's professional judgment about a real bias finding (see M9-specific notes). `app.py` is still the side-effect-free factory. |
-| §16 Database Design | `db/session.py`, `db/models.py`, `db/migrate.py`, `db/repositories/`, `schemas/system.py`, `schemas/model_version.py`, `schemas/protected_attribute.py`, `schemas/plugin_registration.py`, `schemas/policy_binding.py`, `schemas/protected_attribute_rule.py`, `schemas/population_finding.py`, `schemas/population_policy_binding.py`, `schemas/human_review.py` | Real Postgres, formalized via numbered `.sql` migrations (schema authority) + a repository layer per entity. **New in M7**: three indexes (migrations `0017`–`0019`) supporting the windowed metrics-aggregate read pattern. **New in M8**: two additive nullable columns and one non-purely-additive constraint relaxation (migration `0022`, narrowly justified — see `docs/milestones/M8.md` §4.4/§13.12). **New in M9**: two new tables, `verdict_reviews`/`population_finding_reviews` (migrations `0023`–`0024`) — purely additive `CREATE TABLE`, no existing table altered, unlike M8's one necessary exception. Each gets ordinary `GRANT` privileges (mutable workflow state, not evidentiary output — unlike `evidence_chain`/`population_findings`' lockdown), an explicit `ON DELETE RESTRICT` foreign key to its subject, and a **partial** unique index (`one_open_..._per_...`, scoped to non-`RESOLVED` rows) rather than a plain `UNIQUE` — the identical fix M8's own migration `0022` made for `population_policy_bindings`, applied here from the start rather than discovered after the fact. `db/session.create_db_engine`'s bounded connection timeout (M7) unchanged. SQLAlchemy models are query-time mappings only — never used to generate DDL. Multi-tenancy and the analytical-warehouse split remain later milestones. |
-| §17 Deployment Architecture | `infra/docker/` | Single container, single service; assumes an external Postgres — unchanged by M7/M8/M9. A real orchestrator can use `GET /readyz` as an actual readiness probe rather than reusing `/healthz` (liveness only) for both purposes. Multi-plane topology, multi-tenancy, and mTLS are M13. |
+| §15 APIs | `api/health.py`, `api/readiness.py`, `api/ingestion/routes.py`, `api/admin/systems.py`, `api/admin/plugins.py`, `api/admin/policy_bindings.py`, `api/admin/protected_attribute_rules.py`, `api/admin/population_policy_bindings.py`, `api/admin/population_findings.py`, `api/admin/metrics.py`, `api/admin/verdict_reviews.py`, `api/admin/population_finding_reviews.py`, `api/app.py`, `api/asgi.py` | Ingestion routes are registry-generated (one per registered adapter — currently `synthetic` and `credit-scorecard`), **unchanged by M7/M8/M9/M11**, same response shape; `/healthz` also unchanged. `GET /readyz` and `GET /v1/admin/metrics` (M7) unchanged by M8/M9/M11 — every JSON response shape any client sees is byte-for-byte identical to before M11; encryption/decryption happens entirely at the repository read/write boundary. **New in M9**: ten endpoints across two new routers (`verdict-reviews`, `population-finding-reviews`; `list`/`get`/`claim`/`release`/`resolve` each) — read-only except for the three workflow-transition actions, which never load new code or compute a new result, the same boundary every Admin API in this codebase draws. `claim`/`release`/`resolve` translate a repository-raised `ValueError` conflict into a `409` via an explicit handler in each route, not the codebase's existing global `ValueError → 422` handler. No endpoint anywhere has authentication yet, including these ten — the same standing gap M5/M6/M7/M8 named, now a ninth-consecutive-milestone-and-counting gap (M11 does not close it: encryption protects confidentiality against a compromised credential, not authorization to read through this API). `app.py` is still the side-effect-free factory; **new in M11**, it also builds one `FieldEncryptor` from `Settings.FIELD_ENCRYPTION_KEY` and threads it into every repository that needs it. No new endpoint of any kind added by M11 — see M11-specific notes. |
+| §16 Database Design | `db/session.py`, `db/models.py`, `db/migrate.py`, `db/repositories/`, `schemas/system.py`, `schemas/model_version.py`, `schemas/protected_attribute.py`, `schemas/plugin_registration.py`, `schemas/policy_binding.py`, `schemas/protected_attribute_rule.py`, `schemas/population_finding.py`, `schemas/population_policy_binding.py`, `schemas/human_review.py` | Real Postgres, formalized via numbered `.sql` migrations (schema authority) + a repository layer per entity. **New in M7**: three indexes (migrations `0017`–`0019`) supporting the windowed metrics-aggregate read pattern. **New in M8**: two additive nullable columns and one non-purely-additive constraint relaxation (migration `0022`, narrowly justified — see `docs/milestones/M8.md` §4.4/§13.12). **New in M9**: two new tables, `verdict_reviews`/`population_finding_reviews` (migrations `0023`–`0024`) — purely additive `CREATE TABLE`, no existing table altered, unlike M8's one necessary exception. Each gets ordinary `GRANT` privileges (mutable workflow state, not evidentiary output — unlike `evidence_chain`/`population_findings`' lockdown), an explicit `ON DELETE RESTRICT` foreign key to its subject, and a **partial** unique index (`one_open_..._per_...`, scoped to non-`RESOLVED` rows) rather than a plain `UNIQUE` — the identical fix M8's own migration `0022` made for `population_policy_bindings`, applied here from the start rather than discovered after the fact. `db/session.create_db_engine`'s bounded connection timeout (M7) unchanged. SQLAlchemy models are query-time mappings only — never used to generate DDL. **New in M11**: two more purely-additive migrations, `0025`/`0026` — no `ALTER` of any existing column, no data rewrite, only privilege `GRANT`/`REVOKE` and two new indexes. `0025` extends `evidence_chain`'s own append-only lockdown to `systems`, `model_versions`, `decision_events`, `findings`, `verdicts`, `verdict_findings` (closing `docs/milestones/M9.md` §9.5's disclosed gap); `0026` revokes `DELETE`/`UPDATE` from `gov_platform_app` on `shadow_findings`/`protected_attribute_resolutions` and adds `idx_shadow_findings_evaluated_at`/`idx_protected_attribute_resolutions_resolved_at`. Six ordinary admin-configuration tables (`plugin_registrations`, `policy_bindings`, `protected_attribute_rules`, `population_policy_bindings`, `verdict_reviews`, `population_finding_reviews`) keep their full, unrevoked `DELETE` grant — deliberately, since none is retention-eligible or evidentiary. Multi-tenancy and the analytical-warehouse split remain later milestones. |
+| §17 Deployment Architecture | `infra/docker/` | Single container, single service; assumes an external Postgres — unchanged by M7/M8/M9/M11. A real orchestrator can use `GET /readyz` as an actual readiness probe rather than reusing `/healthz` (liveness only) for both purposes. **M11**: storage-level encryption of that external Postgres volume — the literal, standard reading of "encryption at rest" for the primary datastore — is a documented deployment requirement this repository cannot itself provision or verify (no Postgres provisioning exists in this repository's own infrastructure); `retention/purge_expired_records.py`'s own recurring-schedule invocation (a cron/`CronJob` an operator sets up) is real scheduling scope, also unbuilt here, for the identical reason `population_engine/run_policies.py`'s batch cadence already is. Multi-plane topology, multi-tenancy, and mTLS are M13. |
+
+## M11-specific notes
+
+- **Exactly four columns are application-encrypted, traced directly
+  against every repository method and SQL statement in this codebase, not
+  assumed from the API router layer alone.** `evidence_chain.payload`,
+  `verdict_reviews.resolution_notes`, `population_finding_reviews.resolution_notes`,
+  `protected_attribute_resolutions.proxy_basis`. Every other candidate
+  column was excluded for a specific, checked reason:
+  `decision_events.protected_attribute_refs`/`decision_output` because
+  `population_engine/window.py`'s SQL casts and groups by them directly;
+  `reviewer` (both review tables) because `resolve()`'s own conditional
+  `UPDATE ... WHERE ... AND reviewer = :reviewer` (M9's identity-continuity
+  check) cannot survive comparison against Fernet's non-deterministic
+  ciphertext; `protected_attribute_resolutions.attribute_name` because
+  `list_by_decision_event`'s `ORDER BY` depends on its plaintext order. See
+  `docs/milestones/M11.md` §4.1/§5.1.
+- **Hash-then-encrypt, not encrypt-then-hash — the hash chain's own
+  guarantee is completely unaffected by encryption.** `EvidenceStore.append`
+  computes `record_hash` over the plaintext canonical payload exactly as
+  every milestone before M11 already did; only the resulting JSON string
+  is encrypted before being written to the `payload` column. `verify_chain`'s
+  hash-recomputation *logic* needed zero changes — it already operated on
+  the decrypted `EvidenceRecord.payload` dict, never on raw column bytes.
+  What *did* need real, minimal plumbing (a first-draft claim of "zero code
+  changes" that was traced and found false before implementation began):
+  `EvidenceStore` gaining an `encryptor` collaborator, `verify_chain.py`
+  gaining `--encryption-key`, and a specific, catchable `FieldDecryptionError`
+  distinguishing "cannot be read" from an actual hash-mismatch tamper
+  finding.
+- **No ephemeral, auto-generated key fallback for encryption — a
+  deliberate, asymmetric divergence from `audit.signing.load_signer`'s own
+  precedent.** A signing key with no configured value generates fresh and
+  signs fine within one process's lifetime (the only cost: a different
+  process can't cross-verify). An encryption key with the identical
+  fallback would encrypt real data under a key that exists nowhere
+  durable, and lose access to it on the very next process restart — an
+  unrecoverable, self-inflicted data-loss bug, not a graceful degradation.
+  `FIELD_ENCRYPTION_KEY` unset simply means encryption is off, logged at
+  `WARNING` (not `INFO`) on every affected startup.
+- **Retention applies to exactly two tables, not "old data" in general —
+  and the reason is structural, not a scope preference.** `evidence_chain`
+  is hash-chained; deleting any row breaks `previous_hash` continuity for
+  every row after it. `population_findings` is signed, evidentiary output
+  with the identical "a recompute must be a new row, never a silent
+  rewrite" guarantee a `Verdict` has. The six operational tables migration
+  `0025` locks down are the *normalized record of exactly what
+  `evidence_chain.payload` already embeds* — deleting from them while the
+  full content survives permanently inside the chain would reduce only
+  queryable surface, not actual data retained, a half-measure this
+  document declines to build and call "retention." `shadow_findings`/
+  `protected_attribute_resolutions` are retention-eligible specifically
+  because they are simultaneously non-evidentiary *and* not locked against
+  deletion at the privilege level — see `docs/milestones/M11.md` §4.2.
+- **`protected_attribute_resolutions`' inclusion in retention scope rests
+  on a *conditional* reproducibility premise, disclosed rather than
+  silently assumed.** The M2-era claim ("derived, reconstructible data...
+  re-running the resolver reproduces it") predates M5's switch to a live,
+  DB-backed `protected_attribute_rules` table — granted `UPDATE`/`DELETE`
+  and carrying no `population_findings.classification_snapshot`-equivalent.
+  Under today's Admin API (create/list/get only, no rule-editing endpoint)
+  this is a low-probability, not a zero-probability, risk. The raw
+  attribute values a purged row's classification was computed over are
+  never actually at risk regardless — they persist forever in
+  `decision_events.protected_attribute_refs`/`evidence_chain.payload`,
+  neither of which retention ever touches. See `docs/milestones/M11.md`
+  §4.4.
+- **The privilege lockdown's own claim is scoped to exactly ten tables,
+  not "this schema" as a whole — a real self-contradiction this
+  milestone's own second design-review pass found and corrected before
+  implementation.** Six ordinary admin-configuration tables
+  (`plugin_registrations`, `policy_bindings`, `protected_attribute_rules`,
+  `population_policy_bindings`, `verdict_reviews`,
+  `population_finding_reviews`) retain the full `DELETE` grant given at
+  their own originating migration, unchanged by M11 — correctly so, since
+  none of the six is retention-eligible or evidentiary. An earlier design
+  draft claimed the application role "holds no deletion capability over
+  anything in this schema at all," which these six tables' own grants
+  directly contradict; the corrected, implemented claim is scoped to the
+  ten tables M11 actually classifies.
+- **The retention tool's elevated connection is a real, if narrow, new
+  operational secret — reusing the migration-owner credential, not a new
+  Postgres role.** Unlike a migration credential (used rarely, transiently,
+  under direct supervision), retention is designed to run on a recurring
+  cron/`CronJob` cadence, so this same schema-owning secret must live
+  persistently wherever that schedule runs — a materially larger, more
+  routine exposure than the original "avoid a fourth credential tier"
+  framing weighed. An operator provisioning a narrower,
+  `SELECT`+`DELETE`-only role scoped to exactly the two retention-eligible
+  tables is actively encouraged, not merely permitted, precisely because of
+  that exposure — see `docs/milestones/M11.md` §12.11.
+- **Implementation-time finding, not a design contradiction:**
+  `EvidenceStore.all()` decrypts every row before returning any of them
+  (a pre-existing, eager, list-returning contract), so a decrypt failure
+  is caught wrapping the whole fetch inside `verify_chain_from_database`,
+  not inside `verify_chain()`'s own per-record hash-checking loop the way
+  the design document's prose read at a literal level. The failing
+  record's own `sequence_number` is still named in the resulting
+  `ChainVerificationResult.detail`, so the result stays specific and
+  actionable; `checked_count` just can't reflect hash-verification
+  progress that never got to run in this path.
+- **Chain-checkpointing for `evidence_chain`/`population_findings`
+  remains completely unbuilt — the single largest disclosed gap this
+  milestone leaves open**, unassigned to any future milestone until a
+  concrete legal retention-period requirement or real storage-cost
+  pressure forces the question. See `docs/milestones/M11.md` §4.2/§12.9.
 
 ## M9-specific notes
 

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gov-platform"
-version = "0.11.0"
-description = "Domain-agnostic AI Governance Platform (V2) — M10: Compliance Dashboard rendering system/governance health, population findings, and the human review queue."
+version = "0.12.0"
+description = "Domain-agnostic AI Governance Platform (V2) — M11: Encryption at rest, retention tiers, and privilege classification for the Evidence Store."
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [
