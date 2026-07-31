@@ -253,9 +253,15 @@ def test_a_verdict_created_before_window_start_is_excluded(db_engine) -> None:
 def test_a_verdict_created_exactly_at_window_end_is_excluded_the_upper_bound_is_exclusive(
     db_engine,
 ) -> None:
+    # Window is entirely in the past (not straddling real `now()`) so the
+    # seeded verdict's created_at can never later satisfy some other
+    # test's open-ended `created_at >= since` clause against this same
+    # shared, never-truncated table -- unlike a future-dated window, a
+    # past one can't outlive its own test.
     system = _create_system(db_engine)
-    window_start = datetime.now(UTC)
-    window_end = window_start + timedelta(minutes=1)
+    reference = datetime.now(UTC)
+    window_start = reference - timedelta(minutes=2)
+    window_end = reference - timedelta(minutes=1)
     _seed_verdict(db_engine, system=system, evaluated_at=window_end, created_at=window_end)
 
     report = get_compliance_report(
@@ -364,9 +370,9 @@ def test_system_id_filter_scopes_verdicts_findings_and_verdict_reviews_to_one_sy
     correctly excluding its verdicts/findings."""
     target_system = _create_system(db_engine, name_prefix="report-target")
     other_system = _create_system(db_engine, name_prefix="report-other")
-    now = datetime.now(UTC)
 
     window_start = datetime.now(UTC)
+    now = datetime.now(UTC)
     target_verdict_id = _seed_verdict(
         db_engine,
         system=target_system,

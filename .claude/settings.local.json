@@ -118,7 +118,18 @@
       "Bash(export POSTGRES_URL=\"postgresql+psycopg://gov_platform_app:gov_platform_app_local_test_password@localhost:5432/gov_platform\")",
       "Read(//tmp/**)",
       "PowerShell(Get-CimInstance *)",
-      "Bash(docker exec *)"
+      "Bash(docker exec *)",
+      "Bash(Get-Content src/gov_platform/db/migrate.py)",
+      "Bash(python -c \"print\\('done'\\)\")",
+      "Bash(pytest -q)",
+      "PowerShell(Start-Process \"C:\\\\Program Files\\\\Docker\\\\Docker\\\\Docker Desktop.exe\"; Write-Output \"started\")",
+      "Bash(export ADMIN_DATABASE_URL=\"postgresql://postgres:postgres@localhost:55432/gov_platform\")",
+      "Bash(git stash *)",
+      "Bash(export GOV_PLATFORM_DATABASE_URL=\"postgresql+psycopg://gov_platform_app:gov_platform_app_ci_only_password@localhost:55432/gov_platform\")",
+      "Bash(export POSTGRES_URL=\"postgresql+psycopg://gov_platform_app:gov_platform_app_ci_only_password@localhost:55432/gov_platform\")",
+      "Bash(pytest -q --no-cov)",
+      "Bash(pytest -q --no-cov tests/integration/test_compliance_report_postgres.py::test_system_id_filter_scopes_verdicts_findings_and_verdict_reviews_to_one_system)",
+      "Bash(pytest -q --cov-fail-under=98)"
     ]
   }
 }
