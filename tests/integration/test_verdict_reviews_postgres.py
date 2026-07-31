@@ -20,8 +20,10 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from gov_platform.db.models import VerdictReviewRow
 from gov_platform.db.repositories.verdict import VerdictRepository
 from gov_platform.db.repositories.verdict_review import VerdictReviewRepository
 from gov_platform.schemas.finding import Finding, FindingOutcome
@@ -510,6 +512,110 @@ def test_list_all_filters_by_severity(evidence_store, make_decision_event, db_en
     hold_only_verdict_ids = {r.verdict_id for r in hold_only}
     assert hold_verdict_id in hold_only_verdict_ids
     assert escalate_verdict_id not in hold_only_verdict_ids
+
+
+def test_list_all_respects_limit(evidence_store, make_decision_event, db_engine) -> None:
+    repository = VerdictReviewRepository()
+    with Session(db_engine) as session:
+        for _ in range(3):
+            verdict_id = _new_verdict_id(evidence_store, make_decision_event)
+            repository.create(session, verdict_id)
+        session.commit()
+
+        limited = repository.list_all(session, limit=2)
+
+    assert len(limited) == 2
+
+
+def test_list_all_respects_offset(evidence_store, make_decision_event, db_engine) -> None:
+    repository = VerdictReviewRepository()
+    verdict_id_a = _new_verdict_id(evidence_store, make_decision_event)
+    verdict_id_b = _new_verdict_id(evidence_store, make_decision_event)
+
+    with Session(db_engine) as session:
+        review_a = repository.create(session, verdict_id_a)
+        review_b = repository.create(session, verdict_id_b)
+        session.commit()
+    assert review_a is not None
+    assert review_b is not None
+
+    with Session(db_engine) as session:
+        first_page = repository.list_all(session, limit=1)
+        second_page = repository.list_all(session, limit=1, offset=1)
+
+    assert first_page[0].id != second_page[0].id
+
+
+def test_offset_without_limit_returns_everything_after_the_skipped_row(
+    evidence_store, make_decision_event, db_engine
+) -> None:
+    """M15 §5.1: `limit`/`offset` are independent -- `offset` alone is
+    valid, ordinary SQL, not an error."""
+    repository = VerdictReviewRepository()
+    verdict_id_a = _new_verdict_id(evidence_store, make_decision_event)
+    verdict_id_b = _new_verdict_id(evidence_store, make_decision_event)
+
+    with Session(db_engine) as session:
+        review_a = repository.create(session, verdict_id_a)
+        review_b = repository.create(session, verdict_id_b)
+        session.commit()
+    assert review_a is not None
+    assert review_b is not None
+
+    with Session(db_engine) as session:
+        everything = repository.list_all(session)
+        skipped_first = repository.list_all(session, offset=1)
+
+    assert len(skipped_first) == len(everything) - 1
+
+
+def test_pagination_is_stable_when_two_reviews_share_created_at(
+    evidence_store, make_decision_event, db_engine
+) -> None:
+    """M15 §5.2, mirroring `docs/milestones/M4.md` §13.7's own already-
+    shipped fix: `created_at` alone is not a unique sort key -- two reviews
+    queued from the same batch write can share it (`create()` itself has
+    no caller-settable timestamp, so the tie is forced directly at the row
+    level here, the only way to construct this scenario deterministically).
+    Paging through with `limit=1` must visit every row exactly once."""
+    repository = VerdictReviewRepository()
+    verdict_ids = [_new_verdict_id(evidence_store, make_decision_event) for _ in range(4)]
+
+    with Session(db_engine) as session:
+        reviews = [repository.create(session, vid) for vid in verdict_ids]
+        session.commit()
+    created_ids = {r.id for r in reviews if r is not None}
+    assert len(created_ids) == 4
+
+    shared_created_at = datetime(2026, 6, 1, tzinfo=UTC)
+    with Session(db_engine) as session:
+        session.execute(
+            update(VerdictReviewRow)
+            .where(VerdictReviewRow.id.in_(created_ids))
+            .values(created_at=shared_created_at)
+        )
+        session.commit()
+
+    # `verdict_reviews` is shared and never truncated across the whole test
+    # session (the same discipline `test_admin_population_finding_reviews_api.py`
+    # documents for `population_findings`), so paging until an empty page
+    # would walk every row any other test in this run has ever created.
+    # `shared_created_at` sorts before `datetime.now(UTC)`-stamped rows from
+    # every other test, so the four rows of interest are always among the
+    # very first pages -- stop as soon as all four are accounted for.
+    with Session(db_engine) as session:
+        seen: list[str] = []
+        offset = 0
+        while len(set(seen) & created_ids) < len(created_ids):
+            page = repository.list_all(session, limit=1, offset=offset)
+            if not page:
+                break
+            seen.append(page[0].id)
+            offset += 1
+
+    seen_of_interest = [rid for rid in seen if rid in created_ids]
+    assert len(seen_of_interest) == len(created_ids)
+    assert len(set(seen_of_interest)) == len(created_ids)  # no duplicate, no skip
 
 
 def test_the_backfill_and_live_traffic_race_never_raises_for_either_writer(

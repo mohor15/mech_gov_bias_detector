@@ -53,16 +53,23 @@ class PopulationFindingResponse(BaseModel):
 @router.get("/population-findings", response_model=list[PopulationFindingResponse])
 def list_population_findings(
     system_id: str | None = Query(default=None),
+    limit: int | None = Query(default=None, gt=0, le=1000),
+    offset: int | None = Query(default=None, ge=0),
     engine: Engine = Depends(get_db_engine),
     population_finding_repository: PopulationFindingRepository = Depends(
         get_population_finding_repository
     ),
 ) -> list[PopulationFindingResponse]:
+    """M15: `limit`/`offset` are optional and unbounded by default --
+    omitting both returns every matching row, exactly as before this
+    milestone (`docs/milestones/M15.md` §12.1 option (a))."""
     with Session(engine) as session:
         findings = (
-            population_finding_repository.list_for_system(session, system_id)
+            population_finding_repository.list_for_system(
+                session, system_id, limit=limit, offset=offset
+            )
             if system_id is not None
-            else population_finding_repository.list_all(session)
+            else population_finding_repository.list_all(session, limit=limit, offset=offset)
         )
     return [PopulationFindingResponse(**f.model_dump()) for f in findings]
 

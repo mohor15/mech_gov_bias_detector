@@ -125,6 +125,62 @@ def test_list_filtered_by_severity_returns_only_that_severity(
         assert review["verdict"]["status"] == "RECOMMEND_HOLD"
 
 
+# --- M15: pagination (docs/milestones/M15.md §5.1/§7) ---
+
+
+def test_list_respects_limit(api_client: TestClient, db_engine, make_decision_event) -> None:
+    _seed_review(db_engine, make_decision_event)
+    _seed_review(db_engine, make_decision_event)
+    _seed_review(db_engine, make_decision_event)
+
+    response = api_client.get("/v1/admin/verdict-reviews", params={"limit": 2})
+
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+
+
+def test_list_respects_offset(api_client: TestClient, db_engine, make_decision_event) -> None:
+    _seed_review(db_engine, make_decision_event)
+    _seed_review(db_engine, make_decision_event)
+
+    first_page = api_client.get("/v1/admin/verdict-reviews", params={"limit": 1})
+    second_page = api_client.get("/v1/admin/verdict-reviews", params={"limit": 1, "offset": 1})
+
+    assert first_page.json()[0]["id"] != second_page.json()[0]["id"]
+
+
+def test_list_with_limit_zero_is_422(api_client: TestClient) -> None:
+    response = api_client.get("/v1/admin/verdict-reviews", params={"limit": 0})
+
+    assert response.status_code == 422
+
+
+def test_list_with_limit_over_the_ceiling_is_422(api_client: TestClient) -> None:
+    response = api_client.get("/v1/admin/verdict-reviews", params={"limit": 1001})
+
+    assert response.status_code == 422
+
+
+def test_list_with_negative_offset_is_422(api_client: TestClient) -> None:
+    response = api_client.get("/v1/admin/verdict-reviews", params={"offset": -1})
+
+    assert response.status_code == 422
+
+
+def test_list_respects_limit_combined_with_status_filter(
+    api_client: TestClient, db_engine, make_decision_event
+) -> None:
+    _verdict_id, review_id = _seed_review(db_engine, make_decision_event)
+    _seed_review(db_engine, make_decision_event)
+
+    response = api_client.get("/v1/admin/verdict-reviews", params={"status": "OPEN", "limit": 1})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["status"] == "OPEN"
+
+
 def test_claim_then_resolve_the_full_happy_path(
     api_client: TestClient, db_engine, make_decision_event
 ) -> None:

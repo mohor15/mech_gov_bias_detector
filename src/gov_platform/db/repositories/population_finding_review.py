@@ -89,15 +89,26 @@ class PopulationFindingReviewRepository:
         return self._to_model(row) if row is not None else None
 
     def list_all(
-        self, session: Session, *, status: PopulationFindingReviewStatus | None = None
+        self,
+        session: Session,
+        *,
+        status: PopulationFindingReviewStatus | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> list[PopulationFindingReview]:
         """Defaults to oldest-open-first — see
-        `VerdictReviewRepository.list_all`'s docstring for why."""
+        `VerdictReviewRepository.list_all`'s docstring for why. `limit`/
+        `offset`/the `id` secondary sort key get the identical M15
+        treatment -- see that method's docstring."""
         statement = select(PopulationFindingReviewRow).order_by(
-            PopulationFindingReviewRow.created_at
+            PopulationFindingReviewRow.created_at, PopulationFindingReviewRow.id
         )
         if status is not None:
             statement = statement.where(PopulationFindingReviewRow.status == status.value)
+        if limit is not None:
+            statement = statement.limit(limit)
+        if offset is not None:
+            statement = statement.offset(offset)
         rows = session.execute(statement).scalars()
         return [self._to_model(row) for row in rows]
 

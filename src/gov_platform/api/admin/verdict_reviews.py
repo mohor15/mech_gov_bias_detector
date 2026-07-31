@@ -120,13 +120,18 @@ def _to_response(review: VerdictReview, verdict: GovernanceVerdict) -> VerdictRe
 def list_verdict_reviews(
     status_filter: VerdictReviewStatus | None = Query(default=None, alias="status"),
     severity: VerdictStatus | None = Query(default=None),
+    limit: int | None = Query(default=None, gt=0, le=1000),
+    offset: int | None = Query(default=None, ge=0),
     engine: Engine = Depends(get_db_engine),
     verdict_review_repository: VerdictReviewRepository = Depends(get_verdict_review_repository),
     verdict_repository: VerdictRepository = Depends(get_verdict_repository),
 ) -> list[VerdictReviewResponse]:
+    """M15: `limit`/`offset` are optional and unbounded by default --
+    omitting both returns every matching row, exactly as before this
+    milestone (`docs/milestones/M15.md` §12.1 option (a))."""
     with Session(engine) as session:
         reviews = verdict_review_repository.list_all(
-            session, status=status_filter, severity=severity
+            session, status=status_filter, severity=severity, limit=limit, offset=offset
         )
         verdicts_by_id = verdict_repository.get_many(session, [r.verdict_id for r in reviews])
 

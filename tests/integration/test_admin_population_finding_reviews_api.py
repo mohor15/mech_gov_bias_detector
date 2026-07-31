@@ -49,14 +49,17 @@ def _seed_review(db_engine) -> tuple[str, str]:
             # A unique `evaluated_at`, not the fixed `datetime(2026, 1, 2)`
             # several sibling files also use for unrelated seed data --
             # `population_findings` is shared and never truncated across the
-            # whole test session, and `PopulationFindingRepository.list_all`
-            # orders by `evaluated_at` alone (no secondary tiebreaker), so
-            # many rows sharing one exact timestamp make that order
-            # effectively arbitrary among them. Found via CI: this
-            # collision is what let one of this file's own "deadbeef"
-            # (non-cryptographic) signatures sort ahead of
+            # whole test session. Found via CI: a shared, fixed timestamp let
+            # one of this file's own "deadbeef" (non-cryptographic)
+            # signatures sort ahead of
             # `test_verify_population_findings_postgres.py`'s own,
-            # genuinely-signed record.
+            # genuinely-signed record, back when `PopulationFindingRepository.list_all`
+            # ordered by `evaluated_at` alone. M15 added `id` as a secondary
+            # sort key (`docs/milestones/M15.md` §5.2), so read order for a
+            # tie is deterministic now -- kept unique here anyway, since a
+            # deterministic-but-arbitrary tiebreaker still doesn't guarantee
+            # *this* record sorts where a human reading the list would
+            # expect it to.
             evaluated_at=datetime.now(UTC),
         )
         PopulationFindingRepository().create(
@@ -101,6 +104,50 @@ def test_list_filtered_by_status(api_client: TestClient, db_engine) -> None:
 
     assert response.status_code == 200
     assert review_id in {r["id"] for r in response.json()}
+
+
+# --- M15: pagination (docs/milestones/M15.md §5.1/§7) ---
+
+
+def test_list_respects_limit(api_client: TestClient, db_engine) -> None:
+    _seed_review(db_engine)
+    _seed_review(db_engine)
+    _seed_review(db_engine)
+
+    response = api_client.get("/v1/admin/population-finding-reviews", params={"limit": 2})
+
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+
+
+def test_list_respects_offset(api_client: TestClient, db_engine) -> None:
+    _seed_review(db_engine)
+    _seed_review(db_engine)
+
+    first_page = api_client.get("/v1/admin/population-finding-reviews", params={"limit": 1})
+    second_page = api_client.get(
+        "/v1/admin/population-finding-reviews", params={"limit": 1, "offset": 1}
+    )
+
+    assert first_page.json()[0]["id"] != second_page.json()[0]["id"]
+
+
+def test_list_with_limit_zero_is_422(api_client: TestClient) -> None:
+    response = api_client.get("/v1/admin/population-finding-reviews", params={"limit": 0})
+
+    assert response.status_code == 422
+
+
+def test_list_with_limit_over_the_ceiling_is_422(api_client: TestClient) -> None:
+    response = api_client.get("/v1/admin/population-finding-reviews", params={"limit": 1001})
+
+    assert response.status_code == 422
+
+
+def test_list_with_negative_offset_is_422(api_client: TestClient) -> None:
+    response = api_client.get("/v1/admin/population-finding-reviews", params={"offset": -1})
+
+    assert response.status_code == 422
 
 
 def test_claim_then_resolve_the_full_happy_path(api_client: TestClient, db_engine) -> None:

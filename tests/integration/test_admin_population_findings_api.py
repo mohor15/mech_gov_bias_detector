@@ -96,3 +96,66 @@ def test_list_filtered_by_an_unbound_system_id_is_empty(api_client: TestClient) 
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+# --- M15: pagination (docs/milestones/M15.md §5.1/§7) ---
+
+
+def test_list_respects_limit(api_client: TestClient, db_engine) -> None:
+    system_id, _first = _seed_finding(db_engine)
+    _seed_finding(db_engine, system_id=system_id)
+    _seed_finding(db_engine, system_id=system_id)
+
+    response = api_client.get(
+        "/v1/admin/population-findings", params={"system_id": system_id, "limit": 2}
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+
+
+def test_list_respects_offset(api_client: TestClient, db_engine) -> None:
+    system_id, _first = _seed_finding(db_engine)
+    _seed_finding(db_engine, system_id=system_id)
+
+    first_page = api_client.get(
+        "/v1/admin/population-findings", params={"system_id": system_id, "limit": 1}
+    )
+    second_page = api_client.get(
+        "/v1/admin/population-findings",
+        params={"system_id": system_id, "limit": 1, "offset": 1},
+    )
+
+    assert first_page.json()[0]["id"] != second_page.json()[0]["id"]
+
+
+def test_list_with_limit_zero_is_422(api_client: TestClient) -> None:
+    response = api_client.get("/v1/admin/population-findings", params={"limit": 0})
+
+    assert response.status_code == 422
+
+
+def test_list_with_limit_over_the_ceiling_is_422(api_client: TestClient) -> None:
+    response = api_client.get("/v1/admin/population-findings", params={"limit": 1001})
+
+    assert response.status_code == 422
+
+
+def test_list_with_negative_offset_is_422(api_client: TestClient) -> None:
+    response = api_client.get("/v1/admin/population-findings", params={"offset": -1})
+
+    assert response.status_code == 422
+
+
+def test_list_omitting_limit_and_offset_is_unaffected_by_this_milestone(
+    api_client: TestClient, db_engine
+) -> None:
+    """M15 §12.1 option (a): the backward-compatibility guarantee itself --
+    omitting both parameters returns every matching row, exactly as before
+    this milestone."""
+    _system_id, finding_id = _seed_finding(db_engine)
+
+    response = api_client.get("/v1/admin/population-findings")
+
+    assert response.status_code == 200
+    assert finding_id in {f["id"] for f in response.json()}

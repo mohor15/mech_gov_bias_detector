@@ -126,6 +126,8 @@ class VerdictReviewRepository:
         *,
         status: VerdictReviewStatus | None = None,
         severity: VerdictStatus | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> list[VerdictReview]:
         """Defaults to oldest-open-first (`created_at` ascending) — with
         no pagination and no notification mechanism, a newest-first
@@ -135,14 +137,31 @@ class VerdictReviewRepository:
         denormalized severity column on this table — `VerdictStatus`
         already encodes it), added so `RECOMMEND_HOLD` items aren't
         buried among the more numerous `ESCALATE_FOR_REVIEW` ones in one
-        undifferentiated queue."""
-        statement = select(VerdictReviewRow).order_by(VerdictReviewRow.created_at)
+        undifferentiated queue.
+
+        M15: `limit`/`offset` are each applied independently, only when
+        supplied -- omitting both is byte-for-byte identical to this
+        method's pre-M15 behavior. `id` is a secondary sort key, closing
+        the same OFFSET-pagination tie-break gap `docs/milestones/M4.md`
+        §13.7 already found and fixed once in this codebase (see
+        `docs/milestones/M15.md` §5.2). `VerdictReviewRow.id` stays
+        table-qualified through the `severity` filter's own join below, so
+        it cannot collide with `VerdictRow`'s own `id` column the way a raw
+        SQL bare `id` reference did in `docs/milestones/M12.md`'s own
+        found-and-fixed bug."""
+        statement = select(VerdictReviewRow).order_by(
+            VerdictReviewRow.created_at, VerdictReviewRow.id
+        )
         if status is not None:
             statement = statement.where(VerdictReviewRow.status == status.value)
         if severity is not None:
             statement = statement.join(
                 VerdictRow, VerdictRow.id == VerdictReviewRow.verdict_id
             ).where(VerdictRow.status == severity.value)
+        if limit is not None:
+            statement = statement.limit(limit)
+        if offset is not None:
+            statement = statement.offset(offset)
         rows = session.execute(statement).scalars()
         return [self._to_model(row) for row in rows]
 

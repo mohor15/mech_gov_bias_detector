@@ -120,18 +120,45 @@ class PopulationFindingRepository:
         row = session.get(PopulationFindingRow, finding_id)
         return self._to_model(row) if row is not None else None
 
-    def list_all(self, session: Session) -> list[PopulationFindingRecord]:
-        rows = session.execute(
-            select(PopulationFindingRow).order_by(PopulationFindingRow.evaluated_at)
-        ).scalars()
+    def list_all(
+        self, session: Session, *, limit: int | None = None, offset: int | None = None
+    ) -> list[PopulationFindingRecord]:
+        """M15: `limit`/`offset` are each applied independently, only when
+        supplied -- omitting both is byte-for-byte identical to this
+        method's pre-M15 behavior. `id` is a secondary sort key, closing
+        the same OFFSET-pagination tie-break gap `docs/milestones/M4.md`
+        §13.7 already found and fixed once in this codebase (see
+        `docs/milestones/M15.md` §5.2)."""
+        statement = select(PopulationFindingRow).order_by(
+            PopulationFindingRow.evaluated_at, PopulationFindingRow.id
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
+        if offset is not None:
+            statement = statement.offset(offset)
+        rows = session.execute(statement).scalars()
         return [self._to_model(row) for row in rows]
 
-    def list_for_system(self, session: Session, system_id: str) -> list[PopulationFindingRecord]:
-        rows = session.execute(
+    def list_for_system(
+        self,
+        session: Session,
+        system_id: str,
+        *,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> list[PopulationFindingRecord]:
+        """See `list_all`'s docstring for `limit`/`offset`/`id` -- identical
+        treatment, applied here after the `system_id` filter."""
+        statement = (
             select(PopulationFindingRow)
             .where(PopulationFindingRow.system_id == system_id)
-            .order_by(PopulationFindingRow.evaluated_at)
-        ).scalars()
+            .order_by(PopulationFindingRow.evaluated_at, PopulationFindingRow.id)
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
+        if offset is not None:
+            statement = statement.offset(offset)
+        rows = session.execute(statement).scalars()
         return [self._to_model(row) for row in rows]
 
     @staticmethod

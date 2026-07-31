@@ -195,6 +195,158 @@ def test_parameters_used_round_trips_a_real_dict(db_engine) -> None:
     assert fetched.parameters_used == {"threshold": 0.75, "minimum_group_size": 30.0}
 
 
+def test_list_all_respects_limit(db_engine) -> None:
+    system_id = _new_system_id(db_engine)
+    with Session(db_engine) as session:
+        repository = PopulationFindingRepository()
+        for i in range(3):
+            repository.create(
+                session,
+                _finding(
+                    system_id,
+                    population_finding_id=f"pf-{uuid4()}",
+                    window_start=datetime(2026, 1, i + 1, tzinfo=UTC),
+                    window_end=datetime(2026, 1, i + 2, tzinfo=UTC),
+                    evaluated_at=datetime(2026, 1, i + 2, tzinfo=UTC),
+                ),
+                signature=None,
+                signing_key_id=None,
+            )
+        session.commit()
+
+        limited = repository.list_all(session, limit=2)
+
+    assert len(limited) == 2
+
+
+def test_list_all_respects_offset(db_engine) -> None:
+    """`list_all` has no filter to scope this comparison to just the rows
+    this test creates (unlike `list_for_system`, exercised separately
+    below) -- `population_findings` is shared and never truncated across
+    the whole test session, so this asserts the table-size-independent
+    property `offset` actually guarantees (skip exactly the first N rows
+    of the existing order, return the rest unchanged) rather than assuming
+    this test's own rows are the table's very first."""
+    system_id = _new_system_id(db_engine)
+    with Session(db_engine) as session:
+        repository = PopulationFindingRepository()
+        for i in range(3):
+            repository.create(
+                session,
+                _finding(
+                    system_id,
+                    population_finding_id=f"pf-{uuid4()}",
+                    window_start=datetime(2026, 1, i + 1, tzinfo=UTC),
+                    window_end=datetime(2026, 1, i + 2, tzinfo=UTC),
+                    evaluated_at=datetime(2026, 1, i + 2, tzinfo=UTC),
+                ),
+                signature=None,
+                signing_key_id=None,
+            )
+        session.commit()
+
+        full = repository.list_all(session)
+        offset_by_one = repository.list_all(session, offset=1)
+
+    assert len(offset_by_one) == len(full) - 1
+    assert [r.id for r in offset_by_one] == [r.id for r in full[1:]]
+
+
+def test_list_for_system_respects_limit_and_offset(db_engine) -> None:
+    system_id = _new_system_id(db_engine)
+    with Session(db_engine) as session:
+        repository = PopulationFindingRepository()
+        for i in range(3):
+            repository.create(
+                session,
+                _finding(
+                    system_id,
+                    population_finding_id=f"pf-{uuid4()}",
+                    window_start=datetime(2026, 1, i + 1, tzinfo=UTC),
+                    window_end=datetime(2026, 1, i + 2, tzinfo=UTC),
+                    evaluated_at=datetime(2026, 1, i + 2, tzinfo=UTC),
+                ),
+                signature=None,
+                signing_key_id=None,
+            )
+        session.commit()
+
+        page = repository.list_for_system(session, system_id, limit=1, offset=1)
+
+    assert len(page) == 1
+
+
+def test_offset_without_limit_returns_everything_after_the_skipped_rows(db_engine) -> None:
+    """M15 §5.1: `limit`/`offset` are independent -- `offset` alone is
+    valid, ordinary SQL, not an error."""
+    system_id = _new_system_id(db_engine)
+    with Session(db_engine) as session:
+        repository = PopulationFindingRepository()
+        for i in range(3):
+            repository.create(
+                session,
+                _finding(
+                    system_id,
+                    population_finding_id=f"pf-{uuid4()}",
+                    window_start=datetime(2026, 1, i + 1, tzinfo=UTC),
+                    window_end=datetime(2026, 1, i + 2, tzinfo=UTC),
+                    evaluated_at=datetime(2026, 1, i + 2, tzinfo=UTC),
+                ),
+                signature=None,
+                signing_key_id=None,
+            )
+        session.commit()
+
+        all_for_system = repository.list_for_system(session, system_id)
+        skipped = repository.list_for_system(session, system_id, offset=1)
+
+    assert len(skipped) == len(all_for_system) - 1
+
+
+def test_pagination_is_stable_when_two_findings_share_evaluated_at(db_engine) -> None:
+    """M15 §5.2, mirroring `docs/milestones/M4.md` §13.7's own already-
+    shipped fix: `evaluated_at` alone is not a unique sort key -- two
+    findings from the same batch run can share it. Paging through with
+    `limit=1` must visit every row exactly once, never duplicating or
+    skipping one, proving the `id` secondary sort key actually closes the
+    tie-break gap rather than merely documenting it."""
+    system_id = _new_system_id(db_engine)
+    shared_evaluated_at = datetime(2026, 6, 1, tzinfo=UTC)
+    with Session(db_engine) as session:
+        repository = PopulationFindingRepository()
+        created = [
+            repository.create(
+                session,
+                _finding(
+                    system_id,
+                    population_finding_id=f"pf-{uuid4()}",
+                    population_policy_id=f"policy-{i}",
+                    window_start=datetime(2026, 1, i + 1, tzinfo=UTC),
+                    window_end=datetime(2026, 1, i + 2, tzinfo=UTC),
+                    evaluated_at=shared_evaluated_at,
+                ),
+                signature=None,
+                signing_key_id=None,
+            )
+            for i in range(4)
+        ]
+        session.commit()
+        created_ids = {c.id for c in created}
+
+        seen: list[str] = []
+        offset = 0
+        while True:
+            page = repository.list_for_system(session, system_id, limit=1, offset=offset)
+            if not page:
+                break
+            seen.append(page[0].id)
+            offset += 1
+
+    seen_for_this_system = [rid for rid in seen if rid in created_ids]
+    assert len(seen_for_this_system) == len(created_ids)
+    assert len(set(seen_for_this_system)) == len(created_ids)  # no duplicate, no skip
+
+
 def test_as_population_finding_drops_signature_fields(db_engine) -> None:
     system_id = _new_system_id(db_engine)
     finding = _finding(system_id)

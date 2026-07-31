@@ -109,6 +109,8 @@ def _to_response(
 )
 def list_population_finding_reviews(
     status_filter: PopulationFindingReviewStatus | None = Query(default=None, alias="status"),
+    limit: int | None = Query(default=None, gt=0, le=1000),
+    offset: int | None = Query(default=None, ge=0),
     engine: Engine = Depends(get_db_engine),
     population_finding_review_repository: PopulationFindingReviewRepository = Depends(
         get_population_finding_review_repository
@@ -117,8 +119,13 @@ def list_population_finding_reviews(
         get_population_finding_repository
     ),
 ) -> list[PopulationFindingReviewResponse]:
+    """M15: `limit`/`offset` are optional and unbounded by default --
+    omitting both returns every matching row, exactly as before this
+    milestone (`docs/milestones/M15.md` §12.1 option (a))."""
     with Session(engine) as session:
-        reviews = population_finding_review_repository.list_all(session, status=status_filter)
+        reviews = population_finding_review_repository.list_all(
+            session, status=status_filter, limit=limit, offset=offset
+        )
         responses = []
         for review in reviews:
             population_finding = population_finding_repository.get(
