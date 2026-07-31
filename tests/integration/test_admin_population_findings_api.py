@@ -8,7 +8,7 @@ data is seeded for other read-only-API tests in this codebase.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -22,23 +22,34 @@ from tests.conftest import requires_postgres
 pytestmark = requires_postgres
 
 
-def _seed_finding(db_engine, *, system_id: str | None = None) -> tuple[str, str]:
-    """Returns (system_id, population_finding_id)."""
+def _seed_finding(
+    db_engine, *, system_id: str | None = None, window_offset_days: int = 0
+) -> tuple[str, str]:
+    """Returns (system_id, population_finding_id). `window_offset_days`
+    shifts `window_start`/`window_end` (default: the original, unshifted
+    window every pre-existing call site still gets) -- needed whenever a
+    caller seeds more than one finding for the *same* `system_id`, since
+    `population_findings`' own `UNIQUE (population_policy_id, system_id,
+    window_start, window_end)` constraint (migration `0015`,
+    `docs/milestones/M6.md` §13.13) otherwise rejects the second call as a
+    duplicate/overlapping run for that system+window -- exactly as
+    designed."""
     with Session(db_engine) as session:
         if system_id is None:
             system_id = SystemRepository().create(session, name=f"finding-api-system-{uuid4()}").id
+        offset = timedelta(days=window_offset_days)
         finding = PopulationFinding(
             population_finding_id=f"pf-{uuid4()}",
             population_policy_id="adverse-impact-ratio",
             population_policy_version="0.1.0",
             system_id=system_id,
-            window_start=datetime(2026, 1, 1, tzinfo=UTC),
-            window_end=datetime(2026, 1, 2, tzinfo=UTC),
+            window_start=datetime(2026, 1, 1, tzinfo=UTC) + offset,
+            window_end=datetime(2026, 1, 2, tzinfo=UTC) + offset,
             outcome=PopulationFindingOutcome.FLAGGED,
             metric_values={"race:Black": 0.75},
             classification_snapshot={"race": "DIRECT"},
             rationale="test rationale",
-            evaluated_at=datetime(2026, 1, 2, tzinfo=UTC),
+            evaluated_at=datetime(2026, 1, 2, tzinfo=UTC) + offset,
         )
         PopulationFindingRepository().create(
             session, finding, signature="deadbeef", signing_key_id="default"
@@ -103,8 +114,8 @@ def test_list_filtered_by_an_unbound_system_id_is_empty(api_client: TestClient) 
 
 def test_list_respects_limit(api_client: TestClient, db_engine) -> None:
     system_id, _first = _seed_finding(db_engine)
-    _seed_finding(db_engine, system_id=system_id)
-    _seed_finding(db_engine, system_id=system_id)
+    _seed_finding(db_engine, system_id=system_id, window_offset_days=1)
+    _seed_finding(db_engine, system_id=system_id, window_offset_days=2)
 
     response = api_client.get(
         "/v1/admin/population-findings", params={"system_id": system_id, "limit": 2}
@@ -116,7 +127,7 @@ def test_list_respects_limit(api_client: TestClient, db_engine) -> None:
 
 def test_list_respects_offset(api_client: TestClient, db_engine) -> None:
     system_id, _first = _seed_finding(db_engine)
-    _seed_finding(db_engine, system_id=system_id)
+    _seed_finding(db_engine, system_id=system_id, window_offset_days=1)
 
     first_page = api_client.get(
         "/v1/admin/population-findings", params={"system_id": system_id, "limit": 1}
