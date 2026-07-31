@@ -36,7 +36,9 @@ external resource.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import FileResponse
@@ -65,7 +67,7 @@ def dashboard_reviews() -> FileResponse:
     return FileResponse(_SHELL_HTML)
 
 
-def register_dashboard(app: FastAPI) -> None:
+def register_dashboard(app: FastAPI, *, dependencies: Sequence[Any] = ()) -> None:
     """Mounts the dashboard's static assets and registers its router.
 
     Must be called from `create_app()` inside a `try`/`except` — see this
@@ -73,6 +75,15 @@ def register_dashboard(app: FastAPI) -> None:
     packaging defect that leaves `_STATIC_DIR` missing in a real,
     non-editable install must degrade to "no dashboard," never "no
     application at all."
+
+    `dependencies` (M13): forwarded to the router's own `include_router`
+    call -- `create_app()` passes the "any authenticated principal" role
+    check here, a router-level blanket dependency, since all three
+    dashboard views share the identical minimum requirement (session
+    cookie, any role — `docs/milestones/M13.md` §5.4). The static asset
+    *mount* (`login.html` included) is deliberately left unauthenticated:
+    a browser must be able to load the login page itself before it has
+    any credential to present.
     """
     app.mount("/dashboard/static", StaticFiles(directory=_STATIC_DIR), name="dashboard-static")
-    app.include_router(router, prefix="/dashboard")
+    app.include_router(router, prefix="/dashboard", dependencies=list(dependencies))

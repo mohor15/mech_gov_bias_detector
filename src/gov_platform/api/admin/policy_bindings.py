@@ -25,10 +25,15 @@ from pydantic import BaseModel
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from gov_platform.api.dependencies import get_db_engine, get_policy_binding_repository
+from gov_platform.api.dependencies import (
+    get_db_engine,
+    get_policy_binding_repository,
+    require_role,
+)
 from gov_platform.db.repositories.policy_binding import PolicyBindingRepository
 from gov_platform.plugins import registry
 from gov_platform.schemas.policy_binding import PolicyBindingLifecycleState, PolicySeverity
+from gov_platform.schemas.principal import PrincipalRole
 
 router = APIRouter(tags=["admin"])
 
@@ -57,7 +62,10 @@ def _policy_id_known_to_this_process(policy_id: str) -> bool:
 
 
 @router.post(
-    "/policy-bindings", response_model=PolicyBindingResponse, status_code=status.HTTP_201_CREATED
+    "/policy-bindings",
+    response_model=PolicyBindingResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_role(PrincipalRole.ADMIN))],
 )
 def create_policy_binding(
     payload: PolicyBindingRequest,
@@ -104,7 +112,11 @@ def create_policy_binding(
     return PolicyBindingResponse(**binding.model_dump())
 
 
-@router.get("/policy-bindings", response_model=list[PolicyBindingResponse])
+@router.get(
+    "/policy-bindings",
+    response_model=list[PolicyBindingResponse],
+    dependencies=[Depends(require_role(*PrincipalRole))],
+)
 def list_policy_bindings(
     engine: Engine = Depends(get_db_engine),
     policy_binding_repository: PolicyBindingRepository = Depends(get_policy_binding_repository),
@@ -114,7 +126,11 @@ def list_policy_bindings(
     return [PolicyBindingResponse(**b.model_dump()) for b in bindings]
 
 
-@router.get("/policy-bindings/{binding_id}", response_model=PolicyBindingResponse)
+@router.get(
+    "/policy-bindings/{binding_id}",
+    response_model=PolicyBindingResponse,
+    dependencies=[Depends(require_role(*PrincipalRole))],
+)
 def get_policy_binding(
     binding_id: str,
     engine: Engine = Depends(get_db_engine),
@@ -130,7 +146,11 @@ def get_policy_binding(
     return PolicyBindingResponse(**binding.model_dump())
 
 
-@router.post("/policy-bindings/{binding_id}/activate", response_model=PolicyBindingResponse)
+@router.post(
+    "/policy-bindings/{binding_id}/activate",
+    response_model=PolicyBindingResponse,
+    dependencies=[Depends(require_role(PrincipalRole.ADMIN))],
+)
 def activate_policy_binding(
     binding_id: str,
     engine: Engine = Depends(get_db_engine),
@@ -149,7 +169,11 @@ def activate_policy_binding(
     return PolicyBindingResponse(**binding.model_dump())
 
 
-@router.post("/policy-bindings/{binding_id}/deactivate", response_model=PolicyBindingResponse)
+@router.post(
+    "/policy-bindings/{binding_id}/deactivate",
+    response_model=PolicyBindingResponse,
+    dependencies=[Depends(require_role(PrincipalRole.ADMIN))],
+)
 def deactivate_policy_binding(
     binding_id: str,
     engine: Engine = Depends(get_db_engine),

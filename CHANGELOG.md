@@ -5,6 +5,63 @@ grouped by milestone (`ARCH-GOV-002` / `IMPL-GOV-001`), not by release date,
 since this project ships as a sequence of frozen, incremental milestones
 rather than continuous releases.
 
+## [0.14.0-m13] — 2026-07-31 — M13: Authentication & Authorization
+
+Closes the single most repeatedly-named gap in this project's record —
+eleven consecutive milestone documents (M2 through M12) named "no
+authentication anywhere" and deferred it. `docs/milestones/M13.md`'s own
+central finding: "M13," as used across those eleven documents, was never
+one deliverable — it bundled caller authentication/authorization,
+architecture §17's deployment-topology scope (multi-tenancy, mTLS,
+multi-plane), and real-scheduling infrastructure under one shared,
+never-reconciled label. This milestone scopes itself to exactly one of
+the three: authentication and authorization. The other two remain
+explicitly unassigned, not silently absorbed. Full design rationale, a
+two-pass hostile-review record (fifteen findings — five self-authored,
+ten from an independent second pass performed directly against this
+codebase, four of them blocking), and the frozen `AUTH_ENABLED=True`
+default decision: [`docs/milestones/M13.md`](docs/milestones/M13.md).
+
+**`AUTH_ENABLED` defaults to `True` (fail-closed)** — a deliberate,
+disclosed break from every prior opt-in `Settings` field's default-`False`
+precedent (`FIELD_ENCRYPTION_KEY`, `RETENTION_DAYS_*`), approved
+2026-07-31 (`docs/milestones/M13.md` §13.1): an unauthenticated caller
+could otherwise fabricate ingestion events, silently deactivate a policy
+binding governing real financial decisions, or falsely resolve a
+bias-finding review under someone else's name — the single sharpest
+standing risk this project's own production-readiness reviews ever
+named. A fresh or upgraded deployment refuses every request except
+`/healthz`/`/readyz` until an operator provisions at least one principal.
+
+### Added
+- `access/` (new top-level package, deliberately not `auth/` — see below) — `access/tokens.py` (`generate_token`/`hash_token`/`token_matches`, pure stdlib `secrets`/`hashlib`/`hmac`, no new dependency) and `access/create_principal.py` — the CLI that provisions (or revokes) a `Principal`, the only way to create one; mirrors `plugins/seed_registry.py`'s exact shape.
+- `schemas/principal.py` — `PrincipalRole` (`StrEnum`: `INGESTION`/`REVIEWER`/`ADMIN`/`READ_ONLY`) and `Principal` (frozen Pydantic model; the bearer token itself is never a field).
+- `db/repositories/principal.py` — `PrincipalRepository`: `create` (the only place the plaintext token is ever available, returned once), `get`, `get_by_token_hash`, `revoke` (a single conditional `UPDATE ... WHERE revoked_at IS NULL`, never a `DELETE` — "never destroy, only supersede"), `list`.
+- Migration `0028` — `principals` table (purely additive `CREATE TABLE` + `GRANT`), no `ALTER` of any existing table. `role` is plain `TEXT`, no `CHECK` constraint — matches every other enum-backed column in this schema.
+- `api/dependencies.py` gains `get_auth_enabled`, `get_principal_repository`, `get_current_principal`, `require_role(*roles)` (a dependency factory; short-circuits to `None` with no DB round trip when `AUTH_ENABLED=false`), `resolve_principal_from_token`, and `AuthenticationError`/`AuthorizationError`.
+- `api/auth.py` (new router, `/v1/auth` prefix) — `POST /session` exchanges a bearer token for an `HttpOnly`/`Secure`/`SameSite=Strict` cookie; `POST /logout` clears it without revoking the underlying token. `api/dashboard_static/login.html`/`login.js` — a small, static login page for the M10 dashboard, vanilla JS, no build step.
+- `tests/unit/access/test_tokens.py`, `tests/integration/test_authentication_postgres.py` — pure-primitive and real-Postgres coverage; every authentication test constructs its own `Settings(..., AUTH_ENABLED=True)` app instance explicitly, mirroring `requires_admin_postgres`'s "opt in per test file, not suite-wide" shape.
+
+### Changed
+- **Every existing HTTP endpoint's request-side contract** — both ingestion routes now require an `INGESTION`-or-`ADMIN` credential (the first change to ingestion's calling contract since M2's "byte-for-byte unchanged" streak); all eighteen Admin API endpoints and the M10 dashboard's three views require at least an authenticated principal, with role-gated mutation. `/healthz`/`/readyz` remain unauthenticated by design (orchestrator liveness/readiness probes). **No existing response body shape changes.**
+- `api/app.py` — one `PrincipalRepository` and `app.state.auth_enabled` (a narrow `bool`, not the whole `Settings` object) threaded on, following the exact "construct once, thread onto `app.state`" pattern every collaborator here already uses; two new exception handlers (`AuthenticationError` → 401, `AuthorizationError` → 403); router-level blanket `require_role` dependencies at each `include_router`/`register_dashboard` call site for routers where every endpoint shares one minimum role, per-route dependencies (declared in each router module) for routers that mix permission levels.
+- `api/admin/verdict_reviews.py`/`population_finding_reviews.py` — `claim`/`resolve`'s `reviewer` request field becomes optional (a backward-compatible relaxation, not a removal). Once authenticated, the persisted `reviewer` is always the authenticated principal's own name, never the request body; a present-but-disagreeing value is rejected with `422`, never silently discarded — closes `docs/milestones/M9.md`'s own named "fabricated reviewer" gap, **prospectively only** (historical values are never rewritten). New shared helper: `api/admin/_shared.resolve_reviewer`.
+- `config/settings.py` — `AUTH_ENABLED: bool = True`, this project's first boolean `Settings` field (every other opt-in gate instead uses the value's own `None`-ness as the toggle — there is no single per-process secret here to key off of, since a principal's credential lives in the database, not in `Settings`).
+- `api/dashboard.py` — `register_dashboard` gains a `dependencies` parameter, forwarded to its own `include_router` call; the static-asset *mount* (serving `login.html` itself) deliberately stays unauthenticated, so a browser can load the login page before it has any credential to present.
+- `tests/conftest.py` — `test_settings` pins `AUTH_ENABLED=False` explicitly, keeping this platform's entire pre-existing ~640-test Postgres-gated suite passing unmodified.
+- `.github/workflows/ci.yml` — `docker-smoke` provisions a bootstrap `INGESTION` principal and attaches its token to the existing ingestion `curl` call; `lint-type-test` needed no change.
+
+### Fixed
+_(found by a second, independent hostile-review pass, performed directly against this codebase, before implementation began — see `docs/milestones/M13.md`'s own Revision note items 6–15)_
+- Migration `0028`'s own first-drafted SQL had no `GRANT` statement — a real, blocking defect: every `CREATE TABLE` migration in this schema since `0009` grants privileges in the same file, with no exception; omitted, `access/create_principal.py`'s first `INSERT` would have failed with `permission denied for table principals`.
+- The recommended `AUTH_ENABLED=True` default would have broken this repository's own `docker-smoke` CI job (an unauthenticated ingestion `curl`) and the entire existing Postgres-gated test suite (~640 tests, none attaching a credential) — both are now explicit, in-scope parts of this milestone rather than an unstated assumption.
+- The first design draft's "`reviewer` field is dropped once authenticated" left the actual mechanism (and a silent-override footgun) unspecified — corrected to one unconditionally optional field plus explicit handler logic, reusing `resolve()`'s own pre-existing "must match" precedent (M9) one layer up.
+- The new package was first named `auth/`, sitting immediately adjacent, alphabetically and visually, to the existing `audit/` package — renamed to `access/`. The API path prefix (`/v1/auth/...`) is unaffected — a different namespace with no equivalent collision risk.
+- A first-drafted `CHECK (role IN (...))` constraint and the pre-3.11 `PrincipalRole(str, Enum)` idiom were both novel deviations from this schema's/codebase's own unbroken conventions — corrected to plain `TEXT NOT NULL` and `StrEnum` respectively.
+
+### Deferred
+Multi-tenancy, multi-plane deployment, mTLS (architecture §17 — a structurally different concern from authentication, not silently absorbed here). Real scheduling for this platform's three recurring CLIs (unchanged, still an operator's own deployment-topology concern). Comprehensive request-abuse protection beyond the existing `Content-Length` check. Key rotation/KMS/HSM custody for any of this platform's three secret types. A general RBAC/permission-matrix framework (four fixed roles are sufficient). OAuth2/OIDC/SAML federation, SSO, MFA, self-service registration. A persisted audit-log table for authentication events (structured logging is sufficient). Per-`System`/per-adapter-scoped ingestion credentials. Authentication of this platform's own CLIs (they keep their existing, separate, database-credential-based trust boundary). Retroactive validation of historical (pre-M13) `reviewer` values — a permanent, disclosed residual limitation, not a defect any future milestone can fix without violating this project's own "never silently rewrite history" discipline.
+
 ## [0.13.0-m12] — 2026-07-30 — M12: Reporting — Periodic, Document-Shaped Compliance Exports
 
 Completes architecture §14 ("Reporting") — the one deferred item every

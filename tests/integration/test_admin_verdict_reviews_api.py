@@ -186,6 +186,21 @@ def test_release_returns_it_to_open_and_a_different_reviewer_can_claim_it(
     assert claim_response.json()["reviewer"] == "someone-else"
 
 
+def test_release_on_an_unknown_review_is_404(api_client: TestClient) -> None:
+    response = api_client.post("/v1/admin/verdict-reviews/does-not-exist/release")
+
+    assert response.status_code == 404
+
+
+def test_resolve_on_an_unknown_review_is_404(api_client: TestClient) -> None:
+    response = api_client.post(
+        "/v1/admin/verdict-reviews/does-not-exist/resolve",
+        json={"reviewer": "jane", "resolution": "CONFIRMED", "notes": "n/a"},
+    )
+
+    assert response.status_code == 404
+
+
 def test_release_on_an_item_that_is_not_in_review_is_409(
     api_client: TestClient, db_engine, make_decision_event
 ) -> None:

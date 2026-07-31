@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sign in — Compliance Dashboard</title>
+    <link rel="stylesheet" href="/dashboard/static/dashboard.css" />
+  </head>
+  <body>
+    <header class="dashboard-header">
+      <h1>Compliance Dashboard</h1>
+    </header>
+    <main id="login-content">
+      <section class="dashboard-section">
+        <form id="login-form">
+          <label for="login-token">Access token</label><br />
+          <input
+            type="password"
+            id="login-token"
+            name="token"
+            autocomplete="off"
+            required
+          />
+          <button type="submit">Sign in</button>
+        </form>
+        <div id="login-error"></div>
+      </section>
+    </main>
+    <script src="/dashboard/static/login.js" defer></script>
+  </body>
+</html>

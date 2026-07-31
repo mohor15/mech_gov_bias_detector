@@ -21,8 +21,13 @@ from pydantic import BaseModel
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from gov_platform.api.dependencies import get_db_engine, get_protected_attribute_rule_repository
+from gov_platform.api.dependencies import (
+    get_db_engine,
+    get_protected_attribute_rule_repository,
+    require_role,
+)
 from gov_platform.db.repositories.protected_attribute_rule import ProtectedAttributeRuleRepository
+from gov_platform.schemas.principal import PrincipalRole
 from gov_platform.schemas.protected_attribute_rule import ProtectedAttributeRuleClassification
 
 router = APIRouter(tags=["admin"])
@@ -48,6 +53,7 @@ class ProtectedAttributeRuleResponse(BaseModel):
     "/protected-attribute-rules",
     response_model=ProtectedAttributeRuleResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_role(PrincipalRole.ADMIN))],
 )
 def create_protected_attribute_rule(
     payload: ProtectedAttributeRuleRequest,
@@ -83,7 +89,11 @@ def create_protected_attribute_rule(
     return ProtectedAttributeRuleResponse(**rule.model_dump())
 
 
-@router.get("/protected-attribute-rules", response_model=list[ProtectedAttributeRuleResponse])
+@router.get(
+    "/protected-attribute-rules",
+    response_model=list[ProtectedAttributeRuleResponse],
+    dependencies=[Depends(require_role(*PrincipalRole))],
+)
 def list_protected_attribute_rules(
     engine: Engine = Depends(get_db_engine),
     protected_attribute_rule_repository: ProtectedAttributeRuleRepository = Depends(
@@ -95,7 +105,11 @@ def list_protected_attribute_rules(
     return [ProtectedAttributeRuleResponse(**r.model_dump()) for r in rules]
 
 
-@router.get("/protected-attribute-rules/{rule_id}", response_model=ProtectedAttributeRuleResponse)
+@router.get(
+    "/protected-attribute-rules/{rule_id}",
+    response_model=ProtectedAttributeRuleResponse,
+    dependencies=[Depends(require_role(*PrincipalRole))],
+)
 def get_protected_attribute_rule(
     rule_id: str,
     engine: Engine = Depends(get_db_engine),

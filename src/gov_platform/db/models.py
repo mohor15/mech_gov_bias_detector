@@ -247,3 +247,22 @@ class PopulationFindingReviewRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PrincipalRow(Base):
+    """M13: a registered caller (human or machine) -- `role` is plain
+    `TEXT`, no `CHECK` constraint, matching every other enum-backed column
+    in this schema (see migration `0028`'s own comment); `token_hash` is a
+    one-way SHA-256 digest (`access/tokens.py`) -- the plaintext token is
+    never persisted anywhere. Ordinary `GRANT` privileges (migration
+    `0028`), the same privilege class as `plugin_registrations`/
+    `policy_bindings`/etc. -- not evidentiary, not hash-chained."""
+
+    __tablename__ = "principals"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

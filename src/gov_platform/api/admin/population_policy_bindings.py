@@ -69,6 +69,7 @@ from gov_platform.api.dependencies import (
     get_db_engine,
     get_population_policy_binding_repository,
     get_system_repository,
+    require_role,
 )
 from gov_platform.db.repositories.population_policy_binding import (
     PopulationPolicyBindingRepository,
@@ -76,6 +77,7 @@ from gov_platform.db.repositories.population_policy_binding import (
 from gov_platform.db.repositories.system import SystemRepository
 from gov_platform.plugins import registry
 from gov_platform.schemas.population_policy_binding import PopulationPolicyBindingLifecycleState
+from gov_platform.schemas.principal import PrincipalRole
 
 router = APIRouter(tags=["admin"])
 
@@ -130,6 +132,7 @@ def _population_policy_id_known_to_this_process(population_policy_id: str) -> bo
     "/population-policy-bindings",
     response_model=PopulationPolicyBindingResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_role(PrincipalRole.ADMIN))],
 )
 def create_population_policy_binding(
     payload: PopulationPolicyBindingRequest,
@@ -179,7 +182,11 @@ def create_population_policy_binding(
     return PopulationPolicyBindingResponse(**binding.model_dump())
 
 
-@router.get("/population-policy-bindings", response_model=list[PopulationPolicyBindingResponse])
+@router.get(
+    "/population-policy-bindings",
+    response_model=list[PopulationPolicyBindingResponse],
+    dependencies=[Depends(require_role(*PrincipalRole))],
+)
 def list_population_policy_bindings(
     engine: Engine = Depends(get_db_engine),
     population_policy_binding_repository: PopulationPolicyBindingRepository = Depends(
@@ -192,7 +199,9 @@ def list_population_policy_bindings(
 
 
 @router.get(
-    "/population-policy-bindings/{binding_id}", response_model=PopulationPolicyBindingResponse
+    "/population-policy-bindings/{binding_id}",
+    response_model=PopulationPolicyBindingResponse,
+    dependencies=[Depends(require_role(*PrincipalRole))],
 )
 def get_population_policy_binding(
     binding_id: str,
@@ -214,6 +223,7 @@ def get_population_policy_binding(
 @router.post(
     "/population-policy-bindings/{binding_id}/activate",
     response_model=PopulationPolicyBindingResponse,
+    dependencies=[Depends(require_role(PrincipalRole.ADMIN))],
 )
 def activate_population_policy_binding(
     binding_id: str,
@@ -239,6 +249,7 @@ def activate_population_policy_binding(
 @router.post(
     "/population-policy-bindings/{binding_id}/deactivate",
     response_model=PopulationPolicyBindingResponse,
+    dependencies=[Depends(require_role(PrincipalRole.ADMIN))],
 )
 def deactivate_population_policy_binding(
     binding_id: str,

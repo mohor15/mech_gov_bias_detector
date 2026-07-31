@@ -47,13 +47,31 @@ the first Admin API surface that needs to *read* a `Verdict` at all, and
 `VerdictReviewRepository` directly rather than through this module, the
 same way `population_engine/run_policies.py` always has for its own
 `PopulationFindingReviewRepository`.
+
+M13: `get_auth_enabled`/`get_principal_repository` are new, plus the two
+FastAPI dependency functions every authenticated route uses,
+`get_current_principal`/`require_role` (see
+`docs/milestones/M13.md` §5.2). `get_auth_enabled` reads a plain `bool`
+off `app.state` (set once, in `create_app()`, from
+`Settings.AUTH_ENABLED`) — the same narrow, purpose-built `app.state`
+entry + matching provider-function shape every other collaborator here
+already uses, not the whole `Settings` object. `AuthenticationError`/
+`AuthorizationError` are defined here, alongside the dependencies that
+raise them, mirroring `plugins/sandbox.PluginTimeoutError`'s own
+"defined next to what raises it, imported by `api/app.py` for its
+exception handler" precedent.
 """
 
 from __future__ import annotations
 
-from fastapi import Request
-from sqlalchemy.engine import Engine
+from collections.abc import Callable, Coroutine
+from typing import Any
 
+from fastapi import Depends, Request
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
+
+from gov_platform.access.tokens import hash_token
 from gov_platform.audit.evidence_store import EvidenceStore
 from gov_platform.db.repositories.plugin_registration import PluginRegistrationRepository
 from gov_platform.db.repositories.policy_binding import PolicyBindingRepository
@@ -64,12 +82,24 @@ from gov_platform.db.repositories.population_finding_review import (
 from gov_platform.db.repositories.population_policy_binding import (
     PopulationPolicyBindingRepository,
 )
+from gov_platform.db.repositories.principal import PrincipalRepository
 from gov_platform.db.repositories.protected_attribute_rule import ProtectedAttributeRuleRepository
 from gov_platform.db.repositories.shadow_finding import ShadowFindingRepository
 from gov_platform.db.repositories.system import SystemRepository
 from gov_platform.db.repositories.verdict import VerdictRepository
 from gov_platform.db.repositories.verdict_review import VerdictReviewRepository
 from gov_platform.normalization.service import NormalizationService
+from gov_platform.schemas.principal import Principal, PrincipalRole
+
+
+class AuthenticationError(Exception):
+    """Raised by `get_current_principal`: missing, malformed, unknown, or
+    revoked credential."""
+
+
+class AuthorizationError(Exception):
+    """Raised by `require_role`: a real, known principal whose role
+    doesn't permit this action."""
 
 
 def get_normalization_service(request: Request) -> NormalizationService:
@@ -150,3 +180,95 @@ def get_population_finding_review_repository(
         request.app.state.population_finding_review_repository
     )
     return repository
+
+
+def get_auth_enabled(request: Request) -> bool:
+    enabled: bool = request.app.state.auth_enabled
+    return enabled
+
+
+def get_principal_repository(request: Request) -> PrincipalRepository:
+    repository: PrincipalRepository = request.app.state.principal_repository
+    return repository
+
+
+def _extract_token(request: Request) -> str | None:
+    """Checks, in order: the `Authorization: Bearer <token>` header (every
+    API/CLI-style caller), then the `gov_platform_session` cookie (the
+    dashboard, see `api/auth.py`) -- header takes precedence when both are
+    present."""
+    authorization = request.headers.get("authorization")
+    if authorization is not None:
+        scheme, _separator, token = authorization.partition(" ")
+        if scheme.lower() == "bearer" and token:
+            return token
+    return request.cookies.get("gov_platform_session")
+
+
+def resolve_principal_from_token(
+    session: Session, principal_repository: PrincipalRepository, token: str
+) -> Principal | None:
+    """Given a raw bearer token, returns the matching `Principal`, or
+    `None` if it doesn't match any principal or matches a revoked one --
+    never raises. The one shared primitive both `get_current_principal`
+    (token sourced from a header/cookie) and `api/auth.py`'s login
+    endpoint (token sourced from the request body) build on."""
+    principal = principal_repository.get_by_token_hash(session, hash_token(token))
+    if principal is None or principal.revoked_at is not None:
+        return None
+    return principal
+
+
+async def get_current_principal(
+    request: Request,
+    db_engine: Engine = Depends(get_db_engine),
+    principal_repository: PrincipalRepository = Depends(get_principal_repository),
+) -> Principal:
+    """Raises `AuthenticationError` if no credential is present, the
+    credential doesn't match any principal, or the matching principal is
+    revoked. Never itself checks `AUTH_ENABLED` -- `require_role` (the
+    only thing this codebase ever wires onto a route, per
+    `docs/milestones/M13.md` §5.4) is the one place that short-circuits
+    when authentication is disabled."""
+    token = _extract_token(request)
+    if token is None:
+        raise AuthenticationError("missing credential")
+    with Session(db_engine) as session:
+        principal = resolve_principal_from_token(session, principal_repository, token)
+    if principal is None:
+        raise AuthenticationError("invalid or revoked credential")
+    return principal
+
+
+def require_role(
+    *roles: PrincipalRole,
+) -> Callable[..., Coroutine[Any, Any, Principal | None]]:
+    """A dependency *factory* -- `Depends(require_role(PrincipalRole.ADMIN))`
+    -- returning a dependency that calls `get_current_principal` and
+    raises `AuthorizationError` if the resolved principal's role isn't one
+    of `roles`. When `Settings.AUTH_ENABLED` is `False` (an explicit
+    deployment-level override of the approved `True` default, see
+    `docs/milestones/M13.md` §13.1), `get_current_principal` is not called
+    at all -- every route using this dependency functions exactly as it
+    did before M13, returning `None` rather than a real `Principal`. A
+    handler that needs to distinguish "authenticated as X" from "running
+    with authentication disabled" (e.g. `resolve_verdict_review`, see
+    `docs/milestones/M13.md` §5.6) checks for `None`; every other handler
+    only cares that this dependency didn't raise."""
+
+    async def _require_role(
+        request: Request,
+        auth_enabled: bool = Depends(get_auth_enabled),
+        db_engine: Engine = Depends(get_db_engine),
+        principal_repository: PrincipalRepository = Depends(get_principal_repository),
+    ) -> Principal | None:
+        if not auth_enabled:
+            return None
+        principal = await get_current_principal(request, db_engine, principal_repository)
+        if principal.role not in roles:
+            raise AuthorizationError(
+                f"principal role {principal.role.value!r} is not permitted for this action"
+            )
+        return principal
+
+    return _require_role

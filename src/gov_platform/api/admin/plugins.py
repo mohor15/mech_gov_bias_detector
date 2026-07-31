@@ -20,10 +20,15 @@ from pydantic import BaseModel
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from gov_platform.api.dependencies import get_db_engine, get_plugin_registration_repository
+from gov_platform.api.dependencies import (
+    get_db_engine,
+    get_plugin_registration_repository,
+    require_role,
+)
 from gov_platform.db.repositories.plugin_registration import PluginRegistrationRepository
 from gov_platform.plugins import registry
 from gov_platform.schemas.plugin_registration import PluginLifecycleState, PluginType
+from gov_platform.schemas.principal import PrincipalRole
 
 router = APIRouter(tags=["admin"])
 
@@ -51,7 +56,10 @@ def _known_to_this_process(plugin_type: PluginType, plugin_id: str, version: str
 
 
 @router.post(
-    "/plugins", response_model=PluginRegistrationResponse, status_code=status.HTTP_201_CREATED
+    "/plugins",
+    response_model=PluginRegistrationResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_role(PrincipalRole.ADMIN))],
 )
 def register_plugin(
     payload: PluginRegistrationRequest,
@@ -96,7 +104,11 @@ def register_plugin(
     return PluginRegistrationResponse(**registration.model_dump())
 
 
-@router.get("/plugins", response_model=list[PluginRegistrationResponse])
+@router.get(
+    "/plugins",
+    response_model=list[PluginRegistrationResponse],
+    dependencies=[Depends(require_role(*PrincipalRole))],
+)
 def list_plugins(
     engine: Engine = Depends(get_db_engine),
     plugin_registration_repository: PluginRegistrationRepository = Depends(
@@ -108,7 +120,11 @@ def list_plugins(
     return [PluginRegistrationResponse(**r.model_dump()) for r in registrations]
 
 
-@router.get("/plugins/{registration_id}", response_model=PluginRegistrationResponse)
+@router.get(
+    "/plugins/{registration_id}",
+    response_model=PluginRegistrationResponse,
+    dependencies=[Depends(require_role(*PrincipalRole))],
+)
 def get_plugin(
     registration_id: str,
     engine: Engine = Depends(get_db_engine),
@@ -126,7 +142,11 @@ def get_plugin(
     return PluginRegistrationResponse(**registration.model_dump())
 
 
-@router.post("/plugins/{registration_id}/promote", response_model=PluginRegistrationResponse)
+@router.post(
+    "/plugins/{registration_id}/promote",
+    response_model=PluginRegistrationResponse,
+    dependencies=[Depends(require_role(PrincipalRole.ADMIN))],
+)
 def promote_plugin(
     registration_id: str,
     engine: Engine = Depends(get_db_engine),

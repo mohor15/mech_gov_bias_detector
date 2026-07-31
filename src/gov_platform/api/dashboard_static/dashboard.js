@@ -45,6 +45,16 @@ function emptyNotice(label) {
 
 function fetchJson(url) {
   return fetch(url).then((response) => {
+    // M13: every JSON endpoint this dashboard reads now requires an
+    // authenticated session cookie once AUTH_ENABLED=true. A 401 means
+    // "no session, or it expired/was revoked" -- redirect to the login
+    // page rather than rendering a raw error banner, the one addition
+    // to this existing fetch-error-handling pattern M13 makes
+    // (docs/milestones/M13.md §5.5).
+    if (response.status === 401) {
+      window.location.href = "/dashboard/static/login.html";
+      throw new Error(url + " returned HTTP 401 -- redirecting to sign in");
+    }
     if (!response.ok) {
       throw new Error(url + " returned HTTP " + response.status);
     }

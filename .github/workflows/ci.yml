@@ -111,6 +111,20 @@ jobs:
           python -m gov_platform.plugins.seed_registry \
             --database-url "postgresql+psycopg://gov_platform_app:gov_platform_app_ci_only_password@localhost:5432/gov_platform"
 
+      # M13: AUTH_ENABLED defaults to True (fail-closed, docs/milestones/M13.md
+      # §13.1) -- the ingestion POST below now needs a bootstrap INGESTION
+      # principal, the identical "provision before traffic" step the plugin
+      # registry seed above already established. Captures the printed
+      # token (shown once, never persisted) into $INGESTION_TOKEN for the
+      # ingestion step further down.
+      - name: Provision a bootstrap INGESTION principal
+        run: |
+          python -m gov_platform.access.create_principal \
+            --database-url "postgresql+psycopg://gov_platform_app:gov_platform_app_ci_only_password@localhost:5432/gov_platform" \
+            --name "ci-smoke-ingestion" --role INGESTION \
+            | tee /tmp/create_principal.out
+          echo "INGESTION_TOKEN=$(grep '^token' /tmp/create_principal.out | awk '{print $NF}')" >> "$GITHUB_ENV"
+
       - name: Build image
         run: docker build -f infra/docker/Dockerfile -t gov-platform:ci .
 
@@ -133,6 +147,7 @@ jobs:
         run: |
           curl -sf -X POST http://localhost:8000/v1/ingestion/events/synthetic \
             -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $INGESTION_TOKEN" \
             -d '{
                   "source_event_id": "ci-smoke-'"$GITHUB_RUN_ID"'",
                   "source_system": "ci-smoke-system",

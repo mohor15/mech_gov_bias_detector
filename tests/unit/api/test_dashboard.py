@@ -106,8 +106,14 @@ def test_dashboard_routes_do_not_require_a_live_database() -> None:
     # a distinct, unreachable placeholder URL is enough to prove the
     # dashboard's routes work without ever touching Postgres, since
     # construction is lazy and the dashboard reads no repository/Engine at
-    # all (docs/milestones/M10.md §1/§4.3).
-    settings = Settings(DATABASE_URL="postgresql+psycopg://unreachable-dashboard:5432/x")
+    # all (docs/milestones/M10.md §1/§4.3). AUTH_ENABLED=False -- this test
+    # constructs its own Settings directly rather than going through the
+    # `test_settings` fixture (which already pins this), and is testing
+    # DB-free construction, not authentication -- see docs/milestones/M13.md
+    # §5.7.
+    settings = Settings(
+        DATABASE_URL="postgresql+psycopg://unreachable-dashboard:5432/x", AUTH_ENABLED=False
+    )
     client = TestClient(create_app(settings=settings))
 
     response = client.get("/dashboard")

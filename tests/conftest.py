@@ -176,8 +176,23 @@ def test_settings() -> Settings:
     placeholder — safe because Settings/create_app construction never
     connects eagerly. Tests that need a successful persistence round trip
     must also carry `requires_postgres` (or depend on `postgres_url`/
-    `db_engine`/`evidence_store`, which skip on their own)."""
-    return Settings(DATABASE_URL=POSTGRES_URL or _PLACEHOLDER_DATABASE_URL)
+    `db_engine`/`evidence_store`, which skip on their own).
+
+    M13: `AUTH_ENABLED=False` is pinned explicitly here, not left to
+    whatever the field's own (approved, fail-closed) `True` default or
+    the environment happens to be — the identical "the bulk of this
+    platform's own test suite should never need to know about a
+    cross-cutting concern it isn't testing" principle
+    `FIELD_ENCRYPTION_KEY`/`RETENTION_DAYS_*` already benefit from. Left
+    unpinned, every one of this suite's existing `api_client` calls (none
+    of which attaches an `Authorization` header) would start receiving
+    `401` the moment this milestone's code merged. Tests that exercise
+    authentication itself build their own `Settings(..., AUTH_ENABLED=True)`
+    app instance explicitly instead of using this fixture — see
+    `tests/integration/test_authentication_postgres.py` and
+    `docs/milestones/M13.md` §5.7.
+    """
+    return Settings(DATABASE_URL=POSTGRES_URL or _PLACEHOLDER_DATABASE_URL, AUTH_ENABLED=False)
 
 
 @pytest.fixture

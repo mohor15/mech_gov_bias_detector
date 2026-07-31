@@ -42,10 +42,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from gov_platform.api.admin._shared import resolve_reviewer
 from gov_platform.api.dependencies import (
     get_db_engine,
     get_verdict_repository,
     get_verdict_review_repository,
+    require_role,
 )
 from gov_platform.db.repositories.verdict import VerdictRepository
 from gov_platform.db.repositories.verdict_review import VerdictReviewRepository
@@ -54,9 +56,16 @@ from gov_platform.schemas.human_review import (
     VerdictReviewResolution,
     VerdictReviewStatus,
 )
+from gov_platform.schemas.principal import Principal, PrincipalRole
 from gov_platform.schemas.verdict import GovernanceVerdict, VerdictStatus
 
 router = APIRouter(tags=["admin"])
+
+# Bound once, at module scope -- not called inline inside a signature's own
+# default value (ruff B008 flags a nested function call there even though
+# `Depends` itself is allowlisted; see pyproject.toml's own
+# extend-immutable-calls comment).
+_require_reviewer_or_admin = require_role(PrincipalRole.REVIEWER, PrincipalRole.ADMIN)
 
 
 class VerdictReviewResponse(BaseModel):
@@ -73,11 +82,17 @@ class VerdictReviewResponse(BaseModel):
 
 
 class ClaimVerdictReviewRequest(BaseModel):
-    reviewer: str = Field(..., min_length=1)
+    # M13: optional, not required -- a backward-compatible relaxation.
+    # Once a caller is authenticated, the persisted reviewer is always
+    # the authenticated principal's own name, never this field; a
+    # present-but-disagreeing value is rejected, never silently
+    # discarded. See api/admin/_shared.resolve_reviewer and
+    # docs/milestones/M13.md §5.6.
+    reviewer: str | None = Field(default=None, min_length=1)
 
 
 class ResolveVerdictReviewRequest(BaseModel):
-    reviewer: str = Field(..., min_length=1)
+    reviewer: str | None = Field(default=None, min_length=1)
     resolution: VerdictReviewResolution
     notes: str = Field(..., min_length=1)
 
@@ -97,7 +112,11 @@ def _to_response(review: VerdictReview, verdict: GovernanceVerdict) -> VerdictRe
     )
 
 
-@router.get("/verdict-reviews", response_model=list[VerdictReviewResponse])
+@router.get(
+    "/verdict-reviews",
+    response_model=list[VerdictReviewResponse],
+    dependencies=[Depends(require_role(*PrincipalRole))],
+)
 def list_verdict_reviews(
     status_filter: VerdictReviewStatus | None = Query(default=None, alias="status"),
     severity: VerdictStatus | None = Query(default=None),
@@ -114,7 +133,11 @@ def list_verdict_reviews(
     return [_to_response(review, verdicts_by_id[review.verdict_id]) for review in reviews]
 
 
-@router.get("/verdict-reviews/{review_id}", response_model=VerdictReviewResponse)
+@router.get(
+    "/verdict-reviews/{review_id}",
+    response_model=VerdictReviewResponse,
+    dependencies=[Depends(require_role(*PrincipalRole))],
+)
 def get_verdict_review(
     review_id: str,
     engine: Engine = Depends(get_db_engine),
@@ -140,14 +163,16 @@ def claim_verdict_review(
     engine: Engine = Depends(get_db_engine),
     verdict_review_repository: VerdictReviewRepository = Depends(get_verdict_review_repository),
     verdict_repository: VerdictRepository = Depends(get_verdict_repository),
+    principal: Principal | None = Depends(_require_reviewer_or_admin),
 ) -> VerdictReviewResponse:
+    reviewer = resolve_reviewer(payload.reviewer, principal)
     with Session(engine) as session:
         if verdict_review_repository.get(session, review_id) is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="verdict review not found"
             )
         try:
-            review = verdict_review_repository.claim(session, review_id, payload.reviewer)
+            review = verdict_review_repository.claim(session, review_id, reviewer)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         session.commit()
@@ -157,7 +182,11 @@ def claim_verdict_review(
     return _to_response(review, verdict)
 
 
-@router.post("/verdict-reviews/{review_id}/release", response_model=VerdictReviewResponse)
+@router.post(
+    "/verdict-reviews/{review_id}/release",
+    response_model=VerdictReviewResponse,
+    dependencies=[Depends(_require_reviewer_or_admin)],
+)
 def release_verdict_review(
     review_id: str,
     engine: Engine = Depends(get_db_engine),
@@ -187,7 +216,9 @@ def resolve_verdict_review(
     engine: Engine = Depends(get_db_engine),
     verdict_review_repository: VerdictReviewRepository = Depends(get_verdict_review_repository),
     verdict_repository: VerdictRepository = Depends(get_verdict_repository),
+    principal: Principal | None = Depends(_require_reviewer_or_admin),
 ) -> VerdictReviewResponse:
+    reviewer = resolve_reviewer(payload.reviewer, principal)
     with Session(engine) as session:
         if verdict_review_repository.get(session, review_id) is None:
             raise HTTPException(
@@ -197,7 +228,7 @@ def resolve_verdict_review(
             review = verdict_review_repository.resolve(
                 session,
                 review_id,
-                reviewer=payload.reviewer,
+                reviewer=reviewer,
                 resolution=payload.resolution,
                 notes=payload.notes,
             )

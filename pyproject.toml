@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gov-platform"
-version = "0.13.0"
-description = "Domain-agnostic AI Governance Platform (V2) — M12: Reporting — periodic, document-shaped compliance exports (JSON/CSV)."
+version = "0.14.0"
+description = "Domain-agnostic AI Governance Platform (V2) — M13: Authentication & Authorization — opaque bearer-token principals, role-gated endpoints."
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [

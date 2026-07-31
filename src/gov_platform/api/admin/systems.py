@@ -22,8 +22,9 @@ from pydantic import BaseModel
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from gov_platform.api.dependencies import get_db_engine, get_system_repository
+from gov_platform.api.dependencies import get_db_engine, get_system_repository, require_role
 from gov_platform.db.repositories.system import SystemRepository
+from gov_platform.schemas.principal import PrincipalRole
 
 router = APIRouter(tags=["admin"])
 
@@ -44,7 +45,12 @@ class SystemResponse(BaseModel):
     created_at: datetime
 
 
-@router.post("/systems", response_model=SystemResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/systems",
+    response_model=SystemResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_role(PrincipalRole.ADMIN))],
+)
 def register_system(
     payload: SystemRegistrationRequest,
     engine: Engine = Depends(get_db_engine),
@@ -68,7 +74,11 @@ def register_system(
     return SystemResponse(**system.model_dump())
 
 
-@router.get("/systems", response_model=list[SystemResponse])
+@router.get(
+    "/systems",
+    response_model=list[SystemResponse],
+    dependencies=[Depends(require_role(*PrincipalRole))],
+)
 def list_systems(
     engine: Engine = Depends(get_db_engine),
     system_repository: SystemRepository = Depends(get_system_repository),
@@ -78,7 +88,11 @@ def list_systems(
     return [SystemResponse(**system.model_dump()) for system in systems]
 
 
-@router.get("/systems/{system_id}", response_model=SystemResponse)
+@router.get(
+    "/systems/{system_id}",
+    response_model=SystemResponse,
+    dependencies=[Depends(require_role(*PrincipalRole))],
+)
 def get_system(
     system_id: str,
     engine: Engine = Depends(get_db_engine),

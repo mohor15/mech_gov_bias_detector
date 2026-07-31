@@ -134,6 +134,29 @@ def test_claim_on_an_already_claimed_review_is_409(api_client: TestClient, db_en
     assert response.status_code == 409
 
 
+def test_claim_on_an_unknown_review_is_404(api_client: TestClient) -> None:
+    response = api_client.post(
+        "/v1/admin/population-finding-reviews/does-not-exist/claim", json={"reviewer": "jane"}
+    )
+
+    assert response.status_code == 404
+
+
+def test_release_on_an_unknown_review_is_404(api_client: TestClient) -> None:
+    response = api_client.post("/v1/admin/population-finding-reviews/does-not-exist/release")
+
+    assert response.status_code == 404
+
+
+def test_resolve_on_an_unknown_review_is_404(api_client: TestClient) -> None:
+    response = api_client.post(
+        "/v1/admin/population-finding-reviews/does-not-exist/resolve",
+        json={"reviewer": "jane", "resolution": "CONFIRMED", "notes": "n/a"},
+    )
+
+    assert response.status_code == 404
+
+
 def test_release_returns_it_to_open(api_client: TestClient, db_engine) -> None:
     _finding_id, review_id = _seed_review(db_engine)
     api_client.post(

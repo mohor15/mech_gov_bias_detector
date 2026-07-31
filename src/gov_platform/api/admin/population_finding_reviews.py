@@ -29,10 +29,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from gov_platform.api.admin._shared import resolve_reviewer
 from gov_platform.api.dependencies import (
     get_db_engine,
     get_population_finding_repository,
     get_population_finding_review_repository,
+    require_role,
 )
 from gov_platform.db.repositories.population_finding import (
     PopulationFindingRecord,
@@ -46,8 +48,15 @@ from gov_platform.schemas.human_review import (
     PopulationFindingReviewResolution,
     PopulationFindingReviewStatus,
 )
+from gov_platform.schemas.principal import Principal, PrincipalRole
 
 router = APIRouter(tags=["admin"])
+
+# Bound once, at module scope -- not called inline inside a signature's own
+# default value (ruff B008 flags a nested function call there even though
+# `Depends` itself is allowlisted; see pyproject.toml's own
+# extend-immutable-calls comment).
+_require_reviewer_or_admin = require_role(PrincipalRole.REVIEWER, PrincipalRole.ADMIN)
 
 
 class PopulationFindingReviewResponse(BaseModel):
@@ -64,11 +73,14 @@ class PopulationFindingReviewResponse(BaseModel):
 
 
 class ClaimPopulationFindingReviewRequest(BaseModel):
-    reviewer: str = Field(..., min_length=1)
+    # M13: optional, not required -- see api/admin/_shared.resolve_reviewer
+    # and docs/milestones/M13.md §5.6, the identical relaxation
+    # verdict_reviews.py's own twin request models already carry.
+    reviewer: str | None = Field(default=None, min_length=1)
 
 
 class ResolvePopulationFindingReviewRequest(BaseModel):
-    reviewer: str = Field(..., min_length=1)
+    reviewer: str | None = Field(default=None, min_length=1)
     resolution: PopulationFindingReviewResolution
     notes: str = Field(..., min_length=1)
 
@@ -90,7 +102,11 @@ def _to_response(
     )
 
 
-@router.get("/population-finding-reviews", response_model=list[PopulationFindingReviewResponse])
+@router.get(
+    "/population-finding-reviews",
+    response_model=list[PopulationFindingReviewResponse],
+    dependencies=[Depends(require_role(*PrincipalRole))],
+)
 def list_population_finding_reviews(
     status_filter: PopulationFindingReviewStatus | None = Query(default=None, alias="status"),
     engine: Engine = Depends(get_db_engine),
@@ -115,7 +131,9 @@ def list_population_finding_reviews(
 
 
 @router.get(
-    "/population-finding-reviews/{review_id}", response_model=PopulationFindingReviewResponse
+    "/population-finding-reviews/{review_id}",
+    response_model=PopulationFindingReviewResponse,
+    dependencies=[Depends(require_role(*PrincipalRole))],
 )
 def get_population_finding_review(
     review_id: str,
@@ -154,16 +172,16 @@ def claim_population_finding_review(
     population_finding_repository: PopulationFindingRepository = Depends(
         get_population_finding_repository
     ),
+    principal: Principal | None = Depends(_require_reviewer_or_admin),
 ) -> PopulationFindingReviewResponse:
+    reviewer = resolve_reviewer(payload.reviewer, principal)
     with Session(engine) as session:
         if population_finding_review_repository.get(session, review_id) is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="population finding review not found"
             )
         try:
-            review = population_finding_review_repository.claim(
-                session, review_id, payload.reviewer
-            )
+            review = population_finding_review_repository.claim(session, review_id, reviewer)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         session.commit()
@@ -178,6 +196,7 @@ def claim_population_finding_review(
 @router.post(
     "/population-finding-reviews/{review_id}/release",
     response_model=PopulationFindingReviewResponse,
+    dependencies=[Depends(_require_reviewer_or_admin)],
 )
 def release_population_finding_review(
     review_id: str,
@@ -221,7 +240,9 @@ def resolve_population_finding_review(
     population_finding_repository: PopulationFindingRepository = Depends(
         get_population_finding_repository
     ),
+    principal: Principal | None = Depends(_require_reviewer_or_admin),
 ) -> PopulationFindingReviewResponse:
+    reviewer = resolve_reviewer(payload.reviewer, principal)
     with Session(engine) as session:
         if population_finding_review_repository.get(session, review_id) is None:
             raise HTTPException(
@@ -231,7 +252,7 @@ def resolve_population_finding_review(
             review = population_finding_review_repository.resolve(
                 session,
                 review_id,
-                reviewer=payload.reviewer,
+                reviewer=reviewer,
                 resolution=payload.resolution,
                 notes=payload.notes,
             )

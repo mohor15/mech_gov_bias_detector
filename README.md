@@ -1,54 +1,58 @@
-# AI Governance Platform — M12: Reporting — Periodic, Document-Shaped Compliance Exports
+# AI Governance Platform — M13: Authentication & Authorization
 
 A domain-agnostic observation-and-evaluation layer for LLM copilots, classical
 ML models, rule engines, and hybrid decision systems. This repository
 implements the frozen V2 architecture (`ARCH-GOV-002`) incrementally, per the
 frozen implementation plan (`IMPL-GOV-001`).
 
-**Current milestone: M12.** Completes architecture §14 ("Reporting") — the
-one deferred item every milestone since M7 has pointed at and never built.
-A new, small `reporting/` package: a bounded, closed-window
-(`[window_start, window_end)`) query over `verdicts`/`findings`/
-`population_findings`/`verdict_reviews`/`population_finding_reviews`
-(deliberately excluding `shadow_findings`, so a report is guaranteed
-byte-reproducible regardless of how much M11 retention activity has run
-since), and an explicitly-invoked CLI
-(`python -m gov_platform.reporting.generate_report`) exporting the result
-as JSON (primary) or CSV (five flat files, opt-in) — no PDF, no new
-rendering dependency. **Zero new plugin ports, zero new API endpoints,
-zero new external dependencies, zero new database credential tier, and
-zero modification of any pre-existing source file** — the first milestone
-to add a new capability without editing anything that already existed. One
-purely additive migration (two indexes). See
+**Current milestone: M13.** Closes the single most repeatedly-named gap in
+this project's record — eleven consecutive milestone documents (M2 through
+M12) named "no authentication anywhere" and deferred it.
+[`docs/milestones/M13.md`](docs/milestones/M13.md)'s own central finding:
+"M13," as those eleven documents actually used it, was never one
+deliverable — it bundled caller authentication/authorization, architecture
+§17's deployment-topology scope (multi-tenancy, mTLS, multi-plane), and
+real-scheduling infrastructure under one shared, never-reconciled label.
+This milestone scopes itself to exactly one of the three: **opaque,
+cryptographically-random bearer tokens**, issued by a new CLI
+(`python -m gov_platform.access.create_principal`), hashed at rest in one
+new table (`principals`), and checked by a new FastAPI dependency
+(`require_role`) now wired onto every existing HTTP surface — both
+ingestion routes, all eighteen Admin API endpoints, and the M10 dashboard.
+No OAuth2 server, no JWT library, no external identity provider, no new
+dependency of any kind — pure stdlib `secrets`/`hashlib`/`hmac`. One purely
+additive migration (`principals`, plus its `GRANT`). See
 [`docs/architecture-mapping.md`](docs/architecture-mapping.md) for exactly
 what each module does and does not yet do, and
-[`docs/milestones/M12.md`](docs/milestones/M12.md) for the full design
-review, its own two-pass hostile-review record, and production-readiness
-report — which found **two real bugs in the frozen design's own SQL**
-(an ambiguous column reference and an untyped query parameter), both
-invisible to lint/mypy/a Postgres-less test run and caught only once
-actually run against a real Postgres instance, both fixed with a pure
-syntax correction.
+[`docs/milestones/M13.md`](docs/milestones/M13.md) for the full design
+review, its own two-pass hostile-review record (fifteen findings, four of
+them blocking — found and fixed *before* implementation, not after), and
+the frozen `AUTH_ENABLED=True` default decision.
 
-> **Do not point this platform at real applicant/subject data.** Both new
-> M11 protections are **opt-in and off by default**: application-level
-> encryption only takes effect once an operator explicitly sets
-> `GOV_PLATFORM_FIELD_ENCRYPTION_KEY`, and retention only runs against a
-> table once an operator explicitly sets that table's own
-> `RETENTION_DAYS_*` setting **and** invokes the purge CLI (there is no
-> daemon/scheduler). A fresh deployment has neither configured, and stores
-> everything exactly as every milestone before M11 already did. Storage-
-> level encryption of the underlying Postgres volume — the literal, standard
-> reading of "encryption at rest" — remains an infrastructure requirement
-> this repository documents but cannot itself provision or verify (see
-> below). And there is still no auth in front of any endpoint — including
-> the ten M9 Human Review Workflow endpoints and the M10 dashboard.
-> Encryption protects confidentiality against a compromised credential or
-> an unencrypted backup; it does nothing about *authorization to read*
-> through the API, which remains wide open. **M12's report CLI inherits the
-> identical trust boundary** every other CLI in this codebase already has
-> (filesystem/credential access to invoke it) — still no authentication
-> anywhere. Still M13. Synthetic data only.
+> **`AUTH_ENABLED` defaults to `True` (fail-closed) — a deliberate,
+> disclosed break from every prior opt-in setting's default-`False`
+> precedent**, approved 2026-07-31 (`docs/milestones/M13.md` §13.1). A
+> fresh or upgraded deployment refuses every request except
+> `/healthz`/`/readyz` until an operator provisions at least one principal
+> — see "Authentication" below for the required rollout sequence *before*
+> pointing a real deployment's traffic at this version. Set
+> `GOV_PLATFORM_AUTH_ENABLED=false` to explicitly opt back out if your own
+> deployment practice makes a hard-fail default unworkable (a disclosed
+> fallback, not the platform's own default). M11's own protections remain
+> **opt-in and off by default**: application-level encryption only takes
+> effect once an operator explicitly sets `GOV_PLATFORM_FIELD_ENCRYPTION_KEY`,
+> and retention only runs against a table once an operator explicitly sets
+> that table's own `RETENTION_DAYS_*` setting **and** invokes the purge CLI
+> (there is no daemon/scheduler). Storage-level encryption of the
+> underlying Postgres volume — the literal, standard reading of
+> "encryption at rest" — remains an infrastructure requirement this
+> repository documents but cannot itself provision or verify (see below).
+> Authentication protects *who may call this API at all*; it does not by
+> itself provide multi-tenancy, mTLS, or transport-layer (TLS) security —
+> all three remain out of scope, the first two explicitly architecture
+> §17/unassigned, the third an existing, unaddressed deployment-layer
+> assumption this milestone does not change. **Do not point this platform
+> at real applicant/subject data.** Synthetic data only.
 
 Version 1 (a single-domain prototype, superseded by this design) is preserved,
 unmodified, in [`legacy_v1/`](legacy_v1/) for reference.
@@ -112,6 +116,35 @@ python -m gov_platform.plugins.seed_registry --database-url "$GOV_PLATFORM_DATAB
 # RULE FINANCE zip_code: created (PROXY)
 ```
 
+**Authentication (M13)** — required before anything below will accept a
+request, since `AUTH_ENABLED` defaults to `True`. Provision at least one
+`ADMIN` principal (and, for the ingestion example further down, one
+`INGESTION` principal) *before* starting the app — the identical
+"a fresh deployment needs one explicit provisioning step before the
+feature it gates will actually work" shape `seed_registry` already has,
+applied here to authentication instead of plugin promotion:
+
+```bash
+python -m gov_platform.access.create_principal \
+  --database-url "$GOV_PLATFORM_DATABASE_URL" --name "jane" --role ADMIN
+# principal created: jane (ADMIN)
+# token (shown once, not recoverable): <the plaintext token>
+
+python -m gov_platform.access.create_principal \
+  --database-url "$GOV_PLATFORM_DATABASE_URL" --name "ingestion-bot" --role INGESTION
+# principal created: ingestion-bot (INGESTION)
+# token (shown once, not recoverable): <the plaintext token>
+```
+
+Record both tokens somewhere durable (a secrets manager, not a commit) —
+this platform never shows either again. Every `curl` example for the rest
+of this README assumes `$ADMIN_TOKEN`/`$INGESTION_TOKEN` are set to these
+two values and attaches `-H "Authorization: Bearer $ADMIN_TOKEN"` (or
+`$INGESTION_TOKEN` for the ingestion routes) — omitted from most examples
+below purely for brevity, but required on every one of them. To opt out
+entirely (not recommended for anything beyond local exploration), set
+`GOV_PLATFORM_AUTH_ENABLED=false` before starting the app instead.
+
 Now start the app:
 
 ```bash
@@ -122,14 +155,16 @@ Then:
 
 ```bash
 curl http://127.0.0.1:8000/healthz
-# {"status":"HEALTHY"}
+# {"status":"HEALTHY"} -- unauthenticated by design, an orchestrator liveness probe
 
 curl -X POST http://127.0.0.1:8000/v1/admin/systems \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
   -d '{"name": "synthetic-scorecard", "domain": "FINANCE"}'
 
 curl -X POST http://127.0.0.1:8000/v1/ingestion/events/synthetic \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $INGESTION_TOKEN" \
   -d '{
         "source_event_id": "evt-001",
         "source_system": "synthetic-scorecard",
@@ -591,6 +626,17 @@ run entirely under the ordinary `db_engine`/`POSTGRES_URL`, the same
 restricted `gov_platform_app` role every other read-only integration test
 already uses.
 
+**M13**: `tests/conftest.py`'s `test_settings` fixture pins
+`AUTH_ENABLED=False` explicitly — this platform's entire pre-existing
+suite (`api_client` and everything built on it) runs completely unaware
+this milestone exists, unaffected by the `AUTH_ENABLED=True` production
+default. `tests/unit/access/test_tokens.py` (pure, no Postgres) and
+`tests/integration/test_authentication_postgres.py` (real Postgres round
+trips) each construct their own `Settings(..., AUTH_ENABLED=True)` app
+instance explicitly instead, mirroring `requires_admin_postgres`'s own
+"opt in per test file, not suite-wide" shape — no new pytest marker was
+needed.
+
 ## Development commands
 
 ```bash
@@ -606,7 +652,9 @@ src/gov_platform/
                        aggregate queries, M7 -- no new persisted state, no metrics-store technology)
   schemas/             Canonical DecisionEvent, Finding, GovernanceVerdict, System, ModelVersion,
                        ResolvedProtectedAttribute, PluginRegistration, PolicyBinding,
-                       ProtectedAttributeRule, PopulationFinding, PopulationPolicyBinding
+                       ProtectedAttributeRule, PopulationFinding, PopulationPolicyBinding,
+                       Principal (M13 -- PrincipalRole StrEnum + the registered-caller model;
+                       the bearer token itself is never a field)
   adapters/            Adapter[TPayload] port (+ adapter_id/version identity)
                        + SyntheticAdapter, CreditScorecardAdapter
   normalization/       Structural normalization pass
@@ -633,20 +681,30 @@ src/gov_platform/
   reporting/           compliance_report.py (ComplianceReport model + bounded-window queries,
                        M12) + generate_report.py -- the M12 reporting CLI (explicitly-invoked,
                        no daemon); JSON (primary) or CSV (five flat files) export, no PDF
+  access/              tokens.py (M13 -- generate_token/hash_token/token_matches, pure stdlib,
+                       no new dependency) + create_principal.py -- the M13 CLI that provisions
+                       (or revokes) a Principal; the only way to create one, no self-service
+                       HTTP endpoint. Deliberately not named auth/ -- see its own docstring.
   db/                  session.py, migrate.py, models.py, repositories/
   api/
     app.py             Composition root -- builds routes from the plugin registry
     asgi.py            The only module that constructs the default instance
-    dependencies.py    DI providers, typed against ports where ports exist
+    dependencies.py    DI providers, typed against ports where ports exist; M13 --
+                       get_current_principal/require_role, AuthenticationError/AuthorizationError
     middleware.py      MaxBodySizeMiddleware
     health.py          GET /healthz (liveness only, unchanged since M0)
     readiness.py       GET /readyz (real DB-connectivity check, M7 -- additive, not a redefinition)
+    auth.py            POST /v1/auth/session, /v1/auth/logout (M13 -- exchanges a bearer token
+                       for an HttpOnly session cookie, for the M10 dashboard)
     dashboard.py       GET /dashboard, /dashboard/population-findings, /dashboard/reviews (M10 --
                        serves the static shell only; register_dashboard() is called from app.py
-                       inside a try/except so a packaging defect can't take down the whole app)
-    dashboard_static/  index.html, dashboard.css, dashboard.js (M10 -- vanilla JS, fetch()
-                       against the JSON endpoints below, no build step, no framework)
-    ingestion/         Registry-generated: one route per registered adapter (unchanged since M5)
+                       inside a try/except so a packaging defect can't take down the whole app;
+                       M13 -- takes a dependencies= param, the "any authenticated" role check)
+    dashboard_static/  index.html, dashboard.css, dashboard.js, login.html, login.js (M10/M13 --
+                       vanilla JS, fetch() against the JSON endpoints below, no build step, no
+                       framework; login.html/login.js are M13's own minimal sign-in page)
+    ingestion/         Registry-generated: one route per registered adapter (unchanged since M5;
+                       M13 -- the generated router now requires an INGESTION-or-ADMIN credential)
     admin/             systems, plugins (register/list/get/promote), policy-bindings
                        (create/list/get/activate/deactivate), protected-attribute-rules
                        (create/list/get), population-policy-bindings
@@ -662,40 +720,48 @@ tests/integration/     Full HTTP/DB round-trip tests; most need @requires_postgr
 legacy_v1/             Superseded V1 prototype (reference only, not run)
 ```
 
-## What M12 deliberately does not include
+## What M13 deliberately does not include
 
 Every module has a docstring stating precisely which milestone owns the
-capability it doesn't yet have. The short version: **no PDF renderer, and
-no new rendering/templating dependency of any kind** — the one
-illustrative example in this platform's entire citation trail ("e.g. a
-monthly compliance PDF") is read as an example of "periodic,
-document-shaped, non-interactive," not a literal format commitment
-(`docs/milestones/M12.md` §12.1, this document's own highest-stakes call).
-No new `reports` database table, no Admin API endpoint to list, trigger, or
-download a report — the CLI producing a file is the entire surface. No
-fourth plugin port for "report types" — one fixed "compliance summary"
-type ships. No delivery/distribution mechanism (email, upload, scheduled
-push) — a real deployment-operational concern, out of scope. No signing of
-the generated report — it's a derived rendering of already-signed source
-data, not new evidentiary output. No chain-integrity verification folded
-into report generation (`audit/verify_chain.py` remains the separate,
-dedicated tool for that). No shadow-disagreement or
-population-binding-staleness content in the report — deliberately
-excluded, since that's what keeps every report immune to M11's retention
-purge. No elevated/new database credential, no real scheduling (cron,
-`CronJob` — deployment-topology scope, still M13), no authentication of
-any kind (still M13, now a tenth-consecutive-milestone gap), and no
-pagination/streaming for very large report windows (a standing,
-pre-existing platform characteristic, not newly introduced).
+capability it doesn't yet have. The short version: **no multi-tenancy, no
+mTLS, no multi-plane deployment** — architecture §17's own explicit,
+numbered scope, a structurally different concern from caller
+authentication that happens to share a citation only by historical
+accident (`docs/milestones/M13.md` §4.2, this document's own central
+finding). No real scheduling (cron, `CronJob`) for this platform's three
+recurring CLIs — unchanged, still an operator's own deployment-topology
+concern. No comprehensive request-abuse protection beyond the existing
+`Content-Length` check — a distinct concern this milestone's own
+authentication mechanism makes more tractable for a future milestone
+(per-principal rate limiting), but does not itself build. No key
+rotation or KMS/HSM custody for any of this platform's three secret
+types (signing, encryption, now authentication tokens) — still
+unassigned. No general RBAC/permission-matrix framework — four fixed
+roles (`INGESTION`/`REVIEWER`/`ADMIN`/`READ_ONLY`) are sufficient for
+this platform's own real, observed caller shapes. No OAuth2/OIDC/SAML,
+no SSO, no MFA, no self-service registration or password reset —
+principals are CLI-provisioned only, distributed out of band. No
+persisted audit-log table for authentication events — structured
+logging is sufficient. No authentication of this platform's own CLIs —
+they keep their existing, separate, database-credential-based trust
+boundary, the identical one `db/migrate.py`/`plugins/seed_registry.py`/
+every other CLI here already operates under. And no retroactive fix for
+historical (pre-M13) `reviewer` values on already-resolved reviews — a
+permanent, disclosed residual limitation, not a defect a future
+milestone can close without violating this project's own "never
+silently rewrite history" discipline.
 
-## What remains after M12
+## What remains after M13
 
-See [`docs/milestones/M12.md`](docs/milestones/M12.md) for the full design
-review, its two-pass hostile-review record, and production-readiness
-report. In short: M13 is authentication, multi-tenancy, key rotation/KMS
-custody, real scheduling for the retention and reporting CLIs, and the
-several other cross-cutting gaps every milestone since M2 has named and
-left open. `evidence_chain`/`population_findings` chain-checkpointing (a
-prerequisite for ever pruning either) remains the single largest disclosed
-gap this platform carries, unassigned to any milestone until a concrete
-forcing requirement appears.
+See [`docs/milestones/M13.md`](docs/milestones/M13.md) for the full design
+review, its own two-pass hostile-review record, and the frozen
+`AUTH_ENABLED=True` decision. In short: multi-tenancy, mTLS, and
+multi-plane deployment (architecture §17, explicitly not this
+milestone's — see above); real scheduling for the retention/reporting/
+population-policy CLIs; key rotation/KMS custody for any of this
+platform's three secret types; and the several other cross-cutting gaps
+named above remain open, deliberately not absorbed into this milestone.
+`evidence_chain`/`population_findings` chain-checkpointing (a
+prerequisite for ever pruning either) remains the single largest
+disclosed gap this platform carries, unassigned to any milestone until a
+concrete forcing requirement appears.

@@ -95,6 +95,30 @@ class Settings(BaseSettings):
     RETENTION_DAYS_SHADOW_FINDINGS: int | None = None
     RETENTION_DAYS_PROTECTED_ATTRIBUTE_RESOLUTIONS: int | None = None
 
+    # M13: gates whether every existing HTTP surface requires a `Principal`
+    # credential (see api/dependencies.get_current_principal/require_role
+    # and docs/milestones/M13.md §5.2/§13.1). This is this project's first
+    # `bool` Settings field -- every other opt-in gate
+    # (FIELD_ENCRYPTION_KEY, RETENTION_DAYS_*) instead uses the value's own
+    # `None`-ness as the toggle. That pattern doesn't transfer here: unlike
+    # a signing/encryption key, there is no single per-process secret for
+    # this setting to key off of -- a principal's credential is
+    # per-principal, provisioned into the `principals` table, not into
+    # Settings at all -- so a bare boolean is the correct,
+    # structurally-necessary departure (docs/milestones/M13.md §2, Revision
+    # note item 14). Defaults to `True` (fail-closed) -- a deliberate,
+    # disclosed break from FIELD_ENCRYPTION_KEY's own default-`False`
+    # precedent, approved 2026-07-31 (docs/milestones/M13.md §13.1): every
+    # other opt-in setting in this platform only weakens confidentiality or
+    # retention hygiene when left off, while an unauthenticated caller can
+    # fabricate ingestion events, silently deactivate a policy binding
+    # governing real financial decisions, or falsely resolve a
+    # bias-finding review under someone else's name -- the single sharpest
+    # standing risk eleven consecutive milestone documents (M2 through M12)
+    # named and deferred. No rotation, no KMS -- inherits SIGNING_PRIVATE_KEY's
+    # (M5) identical scope boundary for the credential material it gates.
+    AUTH_ENABLED: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

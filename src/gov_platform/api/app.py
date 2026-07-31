@@ -91,15 +91,31 @@ deliberate choice, since this platform has no way to distinguish
 "encryption has never been configured" from "encryption was just
 disabled" without new, out-of-scope machinery, and a quieter log level
 would make that regression easier to miss.
+
+M13: one `PrincipalRepository` is built here, the same "construct once,
+thread onto `app.state`" pattern every repository above already follows.
+`app.state.auth_enabled` is a narrow, purpose-built `bool` (not the whole
+`Settings` object) read by `api/dependencies.require_role`'s own
+short-circuit (`docs/milestones/M13.md` §5.2). Two new exception handlers
+(`AuthenticationError` -> 401, `AuthorizationError` -> 403) mirror the
+existing `PluginTimeoutError`/`ValueError` handlers exactly. Router
+wiring below applies `require_role(...)` per §5.4's own table: a
+router-level blanket dependency (passed to `include_router`/
+`register_dashboard`) where every endpoint in a router shares one
+minimum role; per-route dependencies, declared in each router module
+itself, where a router mixes permission levels (corrected from this
+milestone's own first design draft — `docs/milestones/M13.md` Revision
+note item 1).
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from gov_platform.api import auth as auth_router
 from gov_platform.api import health, readiness
 from gov_platform.api.admin import metrics as admin_metrics
 from gov_platform.api.admin import plugins as admin_plugins
@@ -111,6 +127,7 @@ from gov_platform.api.admin import protected_attribute_rules as admin_protected_
 from gov_platform.api.admin import systems as admin_systems
 from gov_platform.api.admin import verdict_reviews as admin_verdict_reviews
 from gov_platform.api.dashboard import register_dashboard
+from gov_platform.api.dependencies import AuthenticationError, AuthorizationError, require_role
 from gov_platform.api.ingestion.routes import build_ingestion_router
 from gov_platform.api.middleware import MaxBodySizeMiddleware
 from gov_platform.audit.encryption import load_encryptor
@@ -126,6 +143,7 @@ from gov_platform.db.repositories.population_finding_review import (
 from gov_platform.db.repositories.population_policy_binding import (
     PopulationPolicyBindingRepository,
 )
+from gov_platform.db.repositories.principal import PrincipalRepository
 from gov_platform.db.repositories.protected_attribute_rule import ProtectedAttributeRuleRepository
 from gov_platform.db.repositories.shadow_finding import ShadowFindingRepository
 from gov_platform.db.repositories.system import SystemRepository
@@ -136,6 +154,7 @@ from gov_platform.normalization.service import NormalizationService
 from gov_platform.observability.logging import configure_logging
 from gov_platform.plugins.bootstrap import bootstrap_plugins
 from gov_platform.plugins.sandbox import PluginTimeoutError
+from gov_platform.schemas.principal import PrincipalRole
 
 logger = logging.getLogger(__name__)
 
@@ -188,22 +207,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.population_finding_review_repository = PopulationFindingReviewRepository(
         encryptor=encryptor
     )
+    app.state.auth_enabled = resolved_settings.AUTH_ENABLED
+    app.state.principal_repository = PrincipalRepository()
+
+    # M13 §5.4: router-level blanket dependencies, applied at each
+    # include_router() call site -- only for routers where every endpoint
+    # genuinely shares one minimum role. Routers that mix permission
+    # levels (every other admin_* router below) declare per-route
+    # dependencies inside their own module instead (see each file).
+    _any_authenticated = [Depends(require_role(*PrincipalRole))]
+    _ingestion_or_admin = [Depends(require_role(PrincipalRole.INGESTION, PrincipalRole.ADMIN))]
 
     app.include_router(health.router)
     app.include_router(readiness.router)
-    app.include_router(build_ingestion_router(), prefix="/v1/ingestion")
+    app.include_router(auth_router.router, prefix="/v1/auth")
+    app.include_router(
+        build_ingestion_router(), prefix="/v1/ingestion", dependencies=_ingestion_or_admin
+    )
     app.include_router(admin_systems.router, prefix="/v1/admin")
     app.include_router(admin_plugins.router, prefix="/v1/admin")
     app.include_router(admin_policy_bindings.router, prefix="/v1/admin")
     app.include_router(admin_protected_attribute_rules.router, prefix="/v1/admin")
     app.include_router(admin_population_policy_bindings.router, prefix="/v1/admin")
-    app.include_router(admin_population_findings.router, prefix="/v1/admin")
-    app.include_router(admin_metrics.router, prefix="/v1/admin")
+    app.include_router(
+        admin_population_findings.router, prefix="/v1/admin", dependencies=_any_authenticated
+    )
+    app.include_router(admin_metrics.router, prefix="/v1/admin", dependencies=_any_authenticated)
     app.include_router(admin_verdict_reviews.router, prefix="/v1/admin")
     app.include_router(admin_population_finding_reviews.router, prefix="/v1/admin")
 
     try:
-        register_dashboard(app)
+        register_dashboard(app, dependencies=_any_authenticated)
     except Exception:
         # M10 production-readiness requirement (docs/milestones/M10.md
         # §4.3/§8.6): a dashboard packaging/construction failure must
@@ -211,6 +245,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # application. Logged loudly rather than silently swallowed --
         # the dashboard is simply unavailable, everything else proceeds.
         logger.exception("dashboard_registration_failed")
+
+    @app.exception_handler(AuthenticationError)
+    async def authentication_error_handler(
+        request: Request, exc: AuthenticationError
+    ) -> JSONResponse:
+        # M13: missing, malformed, unknown, or revoked credential. The
+        # response body is deliberately content-free -- naming which of
+        # those occurred would let an unauthenticated caller enumerate
+        # which resource IDs exist (docs/milestones/M13.md §5.3).
+        return JSONResponse(status_code=401, content={"detail": "authentication required"})
+
+    @app.exception_handler(AuthorizationError)
+    async def authorization_error_handler(
+        request: Request, exc: AuthorizationError
+    ) -> JSONResponse:
+        # M13: a real, known, non-revoked principal whose role doesn't
+        # permit this action.
+        return JSONResponse(status_code=403, content={"detail": "insufficient permissions"})
 
     @app.exception_handler(PluginTimeoutError)
     async def plugin_timeout_handler(request: Request, exc: PluginTimeoutError) -> JSONResponse:
