@@ -14,6 +14,18 @@ never loads new code, the same boundary `api/admin/plugins.py` draws.
 
 Handlers are plain `def`, not `async def` — same reasoning as every other
 route in this codebase.
+
+M14: `create_policy_binding`'s conflict pre-check now calls
+`get_active_by_identity`, not `get_by_identity` — a deactivated binding
+no longer blocks creating a new one for the same `(adapter_id,
+policy_id)` pair, which migration `0029`'s partial unique index now
+permits at the database level too (`docs/milestones/M8.md`
+§4.4/§13.19's fix, applied here to the sibling table it was always meant
+to also cover — see `docs/milestones/M14.md` §5.1). `activate`/
+`deactivate` now catch `set_lifecycle_state`'s own `ValueError` and
+translate it to a `409`, the identical pattern
+`admin/verdict_reviews.py`'s `claim`/`resolve` already use for their own
+conditional-`UPDATE` conflicts — see `docs/milestones/M14.md` §5.3.
 """
 
 from __future__ import annotations
@@ -90,7 +102,7 @@ def create_policy_binding(
         )
 
     with Session(engine) as session:
-        existing = policy_binding_repository.get_by_identity(
+        existing = policy_binding_repository.get_active_by_identity(
             session, adapter_id=payload.adapter_id, policy_id=payload.policy_id
         )
         if existing is not None:
@@ -161,9 +173,12 @@ def activate_policy_binding(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="policy binding not found"
             )
-        binding = policy_binding_repository.set_lifecycle_state(
-            session, binding_id, PolicyBindingLifecycleState.ACTIVE
-        )
+        try:
+            binding = policy_binding_repository.set_lifecycle_state(
+                session, binding_id, PolicyBindingLifecycleState.ACTIVE
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         session.commit()
 
     return PolicyBindingResponse(**binding.model_dump())
@@ -188,9 +203,12 @@ def deactivate_policy_binding(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="policy binding not found"
             )
-        binding = policy_binding_repository.set_lifecycle_state(
-            session, binding_id, PolicyBindingLifecycleState.INACTIVE
-        )
+        try:
+            binding = policy_binding_repository.set_lifecycle_state(
+                session, binding_id, PolicyBindingLifecycleState.INACTIVE
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         session.commit()
 
     return PolicyBindingResponse(**binding.model_dump())

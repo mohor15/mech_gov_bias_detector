@@ -108,6 +108,62 @@ def test_create_a_duplicate_binding_is_409(
     assert second.status_code == 409
 
 
+def test_recreating_a_binding_after_deactivation_succeeds_through_the_api(
+    api_client: TestClient,
+    fake_adapter_and_policy: tuple[type[Adapter[_FakeBindingPayload]], type[Policy]],
+) -> None:
+    """The end-to-end proof for M14's own headline fix
+    (`docs/milestones/M8.md` §13.20, `docs/milestones/M14.md` §5.1): this
+    exact sequence is what the pre-M14 schema *and* the pre-fix conflict
+    check both blocked. Goes through the HTTP layer deliberately, not the
+    repository directly -- the original bug lived entirely in this
+    endpoint's own conflict check, not in the repository or the schema
+    alone. Mirrors `test_admin_population_policy_bindings_api.py`'s own
+    M8-era twin exactly."""
+    adapter_cls, policy_cls = fake_adapter_and_policy
+    payload = {
+        "adapter_id": adapter_cls.adapter_id,
+        "policy_id": policy_cls.policy_id,
+        "severity": "LOW",
+    }
+
+    first = api_client.post("/v1/admin/policy-bindings", json=payload)
+    assert first.status_code == 201
+    binding_id = first.json()["id"]
+
+    deactivate = api_client.post(f"/v1/admin/policy-bindings/{binding_id}/deactivate")
+    assert deactivate.status_code == 200
+
+    second = api_client.post("/v1/admin/policy-bindings", json={**payload, "severity": "HIGH"})
+
+    assert second.status_code == 201
+    assert second.json()["id"] != binding_id
+    assert second.json()["severity"] == "HIGH"
+    assert second.json()["lifecycle_state"] == "ACTIVE"
+
+
+def test_recreating_a_still_active_binding_is_still_409(
+    api_client: TestClient,
+    fake_adapter_and_policy: tuple[type[Adapter[_FakeBindingPayload]], type[Policy]],
+) -> None:
+    """The conflict check must not become permissive across the board --
+    only across `lifecycle_state`: a still-`ACTIVE` binding still blocks
+    a duplicate, exactly as before M14."""
+    adapter_cls, policy_cls = fake_adapter_and_policy
+    payload = {
+        "adapter_id": adapter_cls.adapter_id,
+        "policy_id": policy_cls.policy_id,
+        "severity": "LOW",
+    }
+
+    first = api_client.post("/v1/admin/policy-bindings", json=payload)
+    assert first.status_code == 201
+
+    second = api_client.post("/v1/admin/policy-bindings", json=payload)
+
+    assert second.status_code == 409
+
+
 def test_create_with_unknown_adapter_id_is_422(
     api_client: TestClient,
     fake_adapter_and_policy: tuple[type[Adapter[_FakeBindingPayload]], type[Policy]],
@@ -217,3 +273,49 @@ def test_deactivating_an_unknown_binding_is_404(api_client: TestClient) -> None:
     response = api_client.post("/v1/admin/policy-bindings/does-not-exist/deactivate")
 
     assert response.status_code == 404
+
+
+def test_activating_an_already_active_binding_is_409(
+    api_client: TestClient,
+    fake_adapter_and_policy: tuple[type[Adapter[_FakeBindingPayload]], type[Policy]],
+) -> None:
+    """M14 §12.1 option (a): a redundant `activate` is a conflict, never a
+    silent 200 no-op -- a newly-created binding is already `ACTIVE`."""
+    adapter_cls, policy_cls = fake_adapter_and_policy
+    create_response = api_client.post(
+        "/v1/admin/policy-bindings",
+        json={
+            "adapter_id": adapter_cls.adapter_id,
+            "policy_id": policy_cls.policy_id,
+            "severity": "LOW",
+        },
+    )
+    binding_id = create_response.json()["id"]
+
+    response = api_client.post(f"/v1/admin/policy-bindings/{binding_id}/activate")
+
+    assert response.status_code == 409
+
+
+def test_deactivating_an_already_inactive_binding_is_409(
+    api_client: TestClient,
+    fake_adapter_and_policy: tuple[type[Adapter[_FakeBindingPayload]], type[Policy]],
+) -> None:
+    """M14 §12.1 option (a): a redundant `deactivate` is a conflict, never
+    a silent 200 no-op."""
+    adapter_cls, policy_cls = fake_adapter_and_policy
+    create_response = api_client.post(
+        "/v1/admin/policy-bindings",
+        json={
+            "adapter_id": adapter_cls.adapter_id,
+            "policy_id": policy_cls.policy_id,
+            "severity": "LOW",
+        },
+    )
+    binding_id = create_response.json()["id"]
+    first_deactivate = api_client.post(f"/v1/admin/policy-bindings/{binding_id}/deactivate")
+    assert first_deactivate.status_code == 200
+
+    response = api_client.post(f"/v1/admin/policy-bindings/{binding_id}/deactivate")
+
+    assert response.status_code == 409

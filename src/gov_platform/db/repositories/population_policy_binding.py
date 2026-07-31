@@ -20,6 +20,14 @@ itself was relaxed to match (migration `0022`, a partial index scoped to
 `ACTIVE`), but the constraint alone does not make a binding's parameters
 changeable without this method too. See `docs/milestones/M8.md`
 §4.4/§13.19.
+
+M14: `set_lifecycle_state` is now a single conditional
+`UPDATE ... WHERE id = :id AND lifecycle_state != :target`, not a
+`session.get()`-then-mutate two-step -- closing `docs/milestones/M9.md`
+§9.6's own named, pre-existing race (found against this exact method),
+mirroring `VerdictReviewRepository.claim`/`release`/`resolve` (M9) and
+`PrincipalRepository.revoke` (M13)'s already-established pattern. See
+`docs/milestones/M14.md` §5.2/§12.1/§12.2.
 """
 
 from __future__ import annotations
@@ -28,7 +36,8 @@ import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -162,11 +171,36 @@ class PopulationPolicyBindingRepository:
         binding_id: str,
         lifecycle_state: PopulationPolicyBindingLifecycleState,
     ) -> PopulationPolicyBinding:
-        row = session.get(PopulationPolicyBindingRow, binding_id)
-        if row is None:
-            raise ValueError(f"no population policy binding with id {binding_id!r}")
-        row.lifecycle_state = lifecycle_state.value
+        """A single conditional `UPDATE ... WHERE id = :id AND
+        lifecycle_state != :target`, checked by row count -- not a
+        `session.get()`-then-mutate two-step, the same materially
+        stronger concurrency-safety pattern `VerdictReviewRepository.claim`/
+        `release`/`resolve` (M9) and `PrincipalRepository.revoke` (M13)
+        already establish, closing `docs/milestones/M9.md` §9.6's own
+        named, pre-existing race. A binding already in the requested
+        state raises `ValueError`, the same "conflict, never a silent
+        no-op" treatment every other conditional-`UPDATE` method in this
+        codebase gives that case -- see `docs/milestones/M14.md` §12.1."""
+        statement = (
+            update(PopulationPolicyBindingRow)
+            .where(
+                PopulationPolicyBindingRow.id == binding_id,
+                PopulationPolicyBindingRow.lifecycle_state != lifecycle_state.value,
+            )
+            .values(lifecycle_state=lifecycle_state.value)
+        )
+        result = session.execute(statement)
+        assert isinstance(result, CursorResult)  # a Core UPDATE always returns one
+        if result.rowcount == 0:
+            row = session.get(PopulationPolicyBindingRow, binding_id, populate_existing=True)
+            if row is None:
+                raise ValueError(f"no population policy binding with id {binding_id!r}")
+            raise ValueError(
+                f"population policy binding {binding_id!r} is already {lifecycle_state.value}"
+            )
         session.flush()
+        row = session.get(PopulationPolicyBindingRow, binding_id, populate_existing=True)
+        assert row is not None  # just updated above, in this same transaction
         return self._to_model(row)
 
     @staticmethod

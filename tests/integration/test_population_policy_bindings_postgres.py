@@ -161,6 +161,27 @@ def test_set_lifecycle_state_on_an_unknown_binding_raises(db_engine) -> None:
         )
 
 
+def test_set_lifecycle_state_on_a_binding_already_in_the_requested_state_raises(
+    db_engine,
+) -> None:
+    """M14 §12.1 option (a): a redundant transition is a conflict, never a
+    silent no-op -- the same treatment `VerdictReviewRepository.claim`/
+    `PrincipalRepository.revoke` give an already-claimed/already-revoked
+    row (`docs/milestones/M14.md` §5.2/§12.1/§12.2)."""
+    system_id = _new_system_id(db_engine)
+    with Session(db_engine) as session:
+        repository = PopulationPolicyBindingRepository()
+        binding = repository.create(
+            session, system_id=system_id, population_policy_id="adverse-impact-ratio"
+        )
+        session.commit()
+
+        with pytest.raises(ValueError, match="already"):
+            repository.set_lifecycle_state(
+                session, binding.id, PopulationPolicyBindingLifecycleState.ACTIVE
+            )
+
+
 # --- M8: admin-configurable parameters and the relaxed uniqueness
 # constraint (docs/milestones/M8.md §4.3/§4.4) ---
 

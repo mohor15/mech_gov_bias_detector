@@ -217,6 +217,41 @@ def test_deactivating_an_unknown_binding_is_404(api_client: TestClient) -> None:
     assert response.status_code == 404
 
 
+def test_activating_an_already_active_binding_is_409(api_client: TestClient, db_engine) -> None:
+    """M14 §12.1 option (a): a redundant `activate` is a conflict, never a
+    silent 200 no-op -- a newly-created binding is already `ACTIVE`
+    (`docs/milestones/M14.md` §5.2/§12.1/§12.2)."""
+    system_id = _new_system_id(db_engine)
+    create_response = api_client.post(
+        "/v1/admin/population-policy-bindings",
+        json={"system_id": system_id, "population_policy_id": "adverse-impact-ratio"},
+    )
+    binding_id = create_response.json()["id"]
+
+    response = api_client.post(f"/v1/admin/population-policy-bindings/{binding_id}/activate")
+
+    assert response.status_code == 409
+
+
+def test_deactivating_an_already_inactive_binding_is_409(api_client: TestClient, db_engine) -> None:
+    """M14 §12.1 option (a): a redundant `deactivate` is a conflict, never
+    a silent 200 no-op."""
+    system_id = _new_system_id(db_engine)
+    create_response = api_client.post(
+        "/v1/admin/population-policy-bindings",
+        json={"system_id": system_id, "population_policy_id": "adverse-impact-ratio"},
+    )
+    binding_id = create_response.json()["id"]
+    first_deactivate = api_client.post(
+        f"/v1/admin/population-policy-bindings/{binding_id}/deactivate"
+    )
+    assert first_deactivate.status_code == 200
+
+    response = api_client.post(f"/v1/admin/population-policy-bindings/{binding_id}/deactivate")
+
+    assert response.status_code == 409
+
+
 # --- post-freeze addendum: reject non-finite (NaN/Infinity) parameter
 # values at binding-creation time (docs/milestones/M8.md's Production-
 # Readiness Review addendum) ---

@@ -53,6 +53,13 @@ confusing, generic `"Out of range float values are not JSON compliant"`
 message instead of a clear one. An explicit `HTTPException` with a plain
 string `detail` we construct ourselves never echoes the raw float back at
 all, sidestepping the problem entirely.
+
+M14: `activate`/`deactivate` now catch `set_lifecycle_state`'s own
+`ValueError` (a binding already in the requested state, or a lost
+concurrent race, per `docs/milestones/M9.md` §9.6) and translate it to a
+`409` — the identical pattern `admin/verdict_reviews.py`'s `claim`/
+`resolve` already use for their own conditional-`UPDATE` conflicts. See
+`docs/milestones/M14.md` §5.2/§5.3/§12.2.
 """
 
 from __future__ import annotations
@@ -238,9 +245,12 @@ def activate_population_policy_binding(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="population policy binding not found",
             )
-        binding = population_policy_binding_repository.set_lifecycle_state(
-            session, binding_id, PopulationPolicyBindingLifecycleState.ACTIVE
-        )
+        try:
+            binding = population_policy_binding_repository.set_lifecycle_state(
+                session, binding_id, PopulationPolicyBindingLifecycleState.ACTIVE
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         session.commit()
 
     return PopulationPolicyBindingResponse(**binding.model_dump())
@@ -270,9 +280,12 @@ def deactivate_population_policy_binding(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="population policy binding not found",
             )
-        binding = population_policy_binding_repository.set_lifecycle_state(
-            session, binding_id, PopulationPolicyBindingLifecycleState.INACTIVE
-        )
+        try:
+            binding = population_policy_binding_repository.set_lifecycle_state(
+                session, binding_id, PopulationPolicyBindingLifecycleState.INACTIVE
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         session.commit()
 
     return PopulationPolicyBindingResponse(**binding.model_dump())
