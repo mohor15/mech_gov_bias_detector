@@ -105,7 +105,20 @@
       "Bash(python -m pytest --collect-only -q)",
       "Bash(env)",
       "Bash(python -m pip show ruff mypy pytest)",
-      "PowerShell(& \"venv\\\\Scripts\\\\python.exe\" -m mypy --strict tests 2>&1 | Select-Object -First 100)"
+      "PowerShell(& \"venv\\\\Scripts\\\\python.exe\" -m mypy --strict tests 2>&1 | Select-Object -First 100)",
+      "Bash(xargs grep -l \"CREATE INDEX\")",
+      "Bash(mypy src/gov_platform/reporting)",
+      "Bash(xargs grep -n \"pytest.raises\\\\|ValidationError\\\\|is frozen\")",
+      "Bash(python -m pytest tests/unit/reporting -v)",
+      "Bash(python -m pytest)",
+      "Bash(python -m pytest tests/unit/reporting --collect-only -q)",
+      "Bash(python -m pytest tests/integration/test_compliance_report_postgres.py tests/integration/test_generate_report_postgres.py --collect-only -q)",
+      "PowerShell(Start-Process \"C:\\\\Users\\\\Mohor\\\\AppData\\\\Local\\\\Programs\\\\DockerDesktop\\\\Docker Desktop.exe\")",
+      "Bash(break)",
+      "Bash(export POSTGRES_URL=\"postgresql+psycopg://gov_platform_app:gov_platform_app_local_test_password@localhost:5432/gov_platform\")",
+      "Read(//tmp/**)",
+      "PowerShell(Get-CimInstance *)",
+      "Bash(docker exec *)"
     ]
   }
 }

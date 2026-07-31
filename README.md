@@ -1,32 +1,34 @@
-# AI Governance Platform — M11: Encryption at Rest, Retention Tiers & Privilege Classification
+# AI Governance Platform — M12: Reporting — Periodic, Document-Shaped Compliance Exports
 
 A domain-agnostic observation-and-evaluation layer for LLM copilots, classical
 ML models, rule engines, and hybrid decision systems. This repository
 implements the frozen V2 architecture (`ARCH-GOV-002`) incrementally, per the
 frozen implementation plan (`IMPL-GOV-001`).
 
-**Current milestone: M11.** Completes architecture §13 ("Audit System")
-with the three things every milestone since M0 has pointed at and never
-built: **application-level encryption at rest** for a fixed, named list of
-columns proven never to participate in any SQL comparison
-(`evidence_chain.payload`, both review tables' `resolution_notes`,
-`protected_attribute_resolutions.proxy_basis`); **retention tiers** for the
-two tables that are simultaneously non-evidentiary and privilege-unlockable
-(`shadow_findings`, `protected_attribute_resolutions`); and **privilege
-classification** closing a gap M9 disclosed and left open — extending the
-`evidence_chain`-style `REVOKE UPDATE, DELETE` lockdown to `systems`,
-`model_versions`, `decision_events`, `findings`, `verdicts`, and
-`verdict_findings`. Adds no new computation and (with two purely-additive
-migrations) almost no new persisted state — its job is entirely about how
-already-computed data is protected while it exists and removed once it no
-longer needs to be. **Zero new external dependencies** — the `cryptography`
-package this platform already depends on (added at M5 for signing) is
-sufficient for the Fernet-based field encryption this milestone adds. See
+**Current milestone: M12.** Completes architecture §14 ("Reporting") — the
+one deferred item every milestone since M7 has pointed at and never built.
+A new, small `reporting/` package: a bounded, closed-window
+(`[window_start, window_end)`) query over `verdicts`/`findings`/
+`population_findings`/`verdict_reviews`/`population_finding_reviews`
+(deliberately excluding `shadow_findings`, so a report is guaranteed
+byte-reproducible regardless of how much M11 retention activity has run
+since), and an explicitly-invoked CLI
+(`python -m gov_platform.reporting.generate_report`) exporting the result
+as JSON (primary) or CSV (five flat files, opt-in) — no PDF, no new
+rendering dependency. **Zero new plugin ports, zero new API endpoints,
+zero new external dependencies, zero new database credential tier, and
+zero modification of any pre-existing source file** — the first milestone
+to add a new capability without editing anything that already existed. One
+purely additive migration (two indexes). See
 [`docs/architecture-mapping.md`](docs/architecture-mapping.md) for exactly
 what each module does and does not yet do, and
-[`docs/milestones/M11.md`](docs/milestones/M11.md) for the full design
-review, its own three-pass hostile-review record, and production-readiness
-report.
+[`docs/milestones/M12.md`](docs/milestones/M12.md) for the full design
+review, its own two-pass hostile-review record, and production-readiness
+report — which found **two real bugs in the frozen design's own SQL**
+(an ambiguous column reference and an untyped query parameter), both
+invisible to lint/mypy/a Postgres-less test run and caught only once
+actually run against a real Postgres instance, both fixed with a pure
+syntax correction.
 
 > **Do not point this platform at real applicant/subject data.** Both new
 > M11 protections are **opt-in and off by default**: application-level
@@ -43,7 +45,10 @@ report.
 > the ten M9 Human Review Workflow endpoints and the M10 dashboard.
 > Encryption protects confidentiality against a compromised credential or
 > an unencrypted backup; it does nothing about *authorization to read*
-> through the API, which remains wide open. Still M13. Synthetic data only.
+> through the API, which remains wide open. **M12's report CLI inherits the
+> identical trust boundary** every other CLI in this codebase already has
+> (filesystem/credential access to invoke it) — still no authentication
+> anywhere. Still M13. Synthetic data only.
 
 Version 1 (a single-domain prototype, superseded by this design) is preserved,
 unmodified, in [`legacy_v1/`](legacy_v1/) for reference.
@@ -483,6 +488,41 @@ planned, low-traffic window; migration `0026` (the two retention tables'
 own privilege change plus their new indexes) carries no equivalent risk
 and needs none.
 
+Generate a compliance summary report for a bounded, closed historical
+window — verdict/finding/population-finding counts and Human Review
+Workflow resolution outcomes. No elevated credential needed (every query
+is a read-only `SELECT`); the ordinary `GOV_PLATFORM_DATABASE_URL` works:
+
+```bash
+# Defaults to the last full calendar month (UTC), writes JSON to stdout.
+python -m gov_platform.reporting.generate_report --database-url "$GOV_PLATFORM_DATABASE_URL"
+
+# An explicit window, scoped to one system, written to a file:
+python -m gov_platform.reporting.generate_report \
+  --database-url "$GOV_PLATFORM_DATABASE_URL" \
+  --window-start "2026-06-01T00:00:00+00:00" --window-end "2026-07-01T00:00:00+00:00" \
+  --system-id "<system id>" \
+  --output monthly-report.json
+
+# CSV -- five flat files sharing a prefix, one per genuinely flat table
+# (review outcomes split into two: verdict reviews and population-finding
+# reviews are different key spaces, not one file):
+python -m gov_platform.reporting.generate_report \
+  --database-url "$GOV_PLATFORM_DATABASE_URL" --format csv --output monthly-report
+# monthly-report-verdicts.csv
+# monthly-report-findings.csv
+# monthly-report-population-findings.csv
+# monthly-report-verdict-reviews.csv
+# monthly-report-population-finding-reviews.csv
+```
+
+No daemon, no in-process scheduler — an explicitly-invoked tool, safe to
+run on any recurring cron/`CronJob` cadence an operator sets up themselves
+(deployment-topology scope, unchanged, still M13). No new database
+credential tier, no new `Settings` field, no persistence of generated
+reports inside this platform at all — the file the CLI produces *is* the
+artifact.
+
 ## Run with Docker
 
 ```bash
@@ -545,6 +585,12 @@ migrations use); set it locally the same way to run those tests too:
 export ADMIN_DATABASE_URL="postgresql://postgres:<password>@localhost:5432/gov_platform"
 ```
 
+**M12** needs no equivalent elevated connection — `reporting/`'s own tests
+(`test_compliance_report_postgres.py`, `test_generate_report_postgres.py`)
+run entirely under the ordinary `db_engine`/`POSTGRES_URL`, the same
+restricted `gov_platform_app` role every other read-only integration test
+already uses.
+
 ## Development commands
 
 ```bash
@@ -584,6 +630,9 @@ src/gov_platform/
   retention/           purge_expired_records.py -- the M11 retention CLI (explicitly-invoked,
                        idempotent, no daemon); deletes rows older than a configured window
                        from shadow_findings/protected_attribute_resolutions only
+  reporting/           compliance_report.py (ComplianceReport model + bounded-window queries,
+                       M12) + generate_report.py -- the M12 reporting CLI (explicitly-invoked,
+                       no daemon); JSON (primary) or CSV (five flat files) export, no PDF
   db/                  session.py, migrate.py, models.py, repositories/
   api/
     app.py             Composition root -- builds routes from the plugin registry
@@ -613,44 +662,40 @@ tests/integration/     Full HTTP/DB round-trip tests; most need @requires_postgr
 legacy_v1/             Superseded V1 prototype (reference only, not run)
 ```
 
-## What M11 deliberately does not include
+## What M12 deliberately does not include
 
 Every module has a docstring stating precisely which milestone owns the
-capability it doesn't yet have. The short version: **no encryption of
-`decision_events.protected_attribute_refs`/`decision_output`** — the one
-deliberate, load-bearing exclusion this milestone is built around;
-`population_engine/window.py`'s SQL casts and groups by those columns
-directly, so an opaque ciphertext blob would silently break every
-population-policy finding (`docs/milestones/M11.md` §4.1). No encryption of
-`reviewer` on either review table or `protected_attribute_resolutions.attribute_name`
-— each participates in a repository-level SQL comparison
-(`resolve()`'s own equality check; `list_by_decision_event`'s `ORDER BY`)
-a non-deterministic cipher cannot survive; `reviewer` remains plaintext, a
-real, disclosed gap, not a cost-free exclusion. No key rotation or KMS/HSM
-custody for either the signing key or the new encryption key (unchanged
-M5 scope boundary, applied consistently). No retroactive encryption of any
-pre-M11 row (encryption applies going forward only, mirroring M5's own
-"no retroactive signing" precedent). No chain pruning/checkpointing for
-`evidence_chain`/`population_findings` — retention applies to exactly two
-tables, not "old data" in general; deleting from a hash-chained or
-signed-evidentiary table is either structurally destructive or would defeat
-the guarantee those tables exist to provide, and no legal retention-period
-requirement or storage-cost pressure has forced that harder question yet.
-No new Admin API surface for retention/encryption status (mirrors
-`run_policies.py`/`backfill_reviews.py`'s existing explicitly-invoked-CLI
-precedent). No provider-specific storage-encryption infrastructure-as-code
-(tier one is a documented deployment requirement this repository doesn't
-itself provision Postgres to implement). No real authentication anywhere
-(still M13, now a ninth-consecutive-milestone gap), and no
-multi-tenancy/multi-plane deployment/mTLS (M13, unchanged).
+capability it doesn't yet have. The short version: **no PDF renderer, and
+no new rendering/templating dependency of any kind** — the one
+illustrative example in this platform's entire citation trail ("e.g. a
+monthly compliance PDF") is read as an example of "periodic,
+document-shaped, non-interactive," not a literal format commitment
+(`docs/milestones/M12.md` §12.1, this document's own highest-stakes call).
+No new `reports` database table, no Admin API endpoint to list, trigger, or
+download a report — the CLI producing a file is the entire surface. No
+fourth plugin port for "report types" — one fixed "compliance summary"
+type ships. No delivery/distribution mechanism (email, upload, scheduled
+push) — a real deployment-operational concern, out of scope. No signing of
+the generated report — it's a derived rendering of already-signed source
+data, not new evidentiary output. No chain-integrity verification folded
+into report generation (`audit/verify_chain.py` remains the separate,
+dedicated tool for that). No shadow-disagreement or
+population-binding-staleness content in the report — deliberately
+excluded, since that's what keeps every report immune to M11's retention
+purge. No elevated/new database credential, no real scheduling (cron,
+`CronJob` — deployment-topology scope, still M13), no authentication of
+any kind (still M13, now a tenth-consecutive-milestone gap), and no
+pagination/streaming for very large report windows (a standing,
+pre-existing platform characteristic, not newly introduced).
 
-## What remains after M11
+## What remains after M12
 
-See [`docs/milestones/M11.md`](docs/milestones/M11.md) for the full design
-review, its three-pass hostile-review record, and production-readiness
-report. In short: M12 is periodic report generation; M13 is authentication,
-multi-tenancy, key rotation/KMS custody, and the several other cross-cutting
-gaps every milestone since M2 has named and left open. `evidence_chain`/
-`population_findings` chain-checkpointing (a prerequisite for ever pruning
-either) remains the single largest disclosed gap this platform carries,
-unassigned to any milestone until a concrete forcing requirement appears.
+See [`docs/milestones/M12.md`](docs/milestones/M12.md) for the full design
+review, its two-pass hostile-review record, and production-readiness
+report. In short: M13 is authentication, multi-tenancy, key rotation/KMS
+custody, real scheduling for the retention and reporting CLIs, and the
+several other cross-cutting gaps every milestone since M2 has named and
+left open. `evidence_chain`/`population_findings` chain-checkpointing (a
+prerequisite for ever pruning either) remains the single largest disclosed
+gap this platform carries, unassigned to any milestone until a concrete
+forcing requirement appears.

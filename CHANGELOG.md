@@ -5,6 +5,50 @@ grouped by milestone (`ARCH-GOV-002` / `IMPL-GOV-001`), not by release date,
 since this project ships as a sequence of frozen, incremental milestones
 rather than continuous releases.
 
+## [0.13.0-m12] — 2026-07-30 — M12: Reporting — Periodic, Document-Shaped Compliance Exports
+
+Completes architecture §14 ("Reporting") — the one deferred item every
+milestone since M7 has pointed at and never built. A new `reporting/`
+package: a bounded, closed-window (`[window_start, window_end)`) query
+function over `verdicts`/`findings`/`population_findings`/`verdict_reviews`/
+`population_finding_reviews` (deliberately excluding `shadow_findings`,
+so a report is guaranteed byte-reproducible across any amount of M11
+retention activity), and an explicitly-invoked CLI
+(`python -m gov_platform.reporting.generate_report`) exporting the result
+as JSON (primary) or CSV (five flat files, opt-in) — no PDF. **Zero new
+plugin ports, zero new API endpoints, zero new external dependencies, zero
+new database credential tier, zero new `Settings` fields, and zero
+modification of any pre-existing source file** — the first milestone to
+add a new capability without editing anything that already existed. One
+purely additive migration (`0027`, two indexes). Full design rationale,
+this milestone's own two-pass hostile-review record (two reversals + two
+amendments from the first pass, five further corrections from a second,
+independent pass), and the post-implementation production-readiness
+review — which found **two real bugs in the frozen design's own SQL**,
+invisible to lint/mypy/a Postgres-less test run and caught only once
+actually executed against a real database:
+[`docs/milestones/M12.md`](docs/milestones/M12.md).
+
+### Added
+- `reporting/__init__.py`, `reporting/compliance_report.py` — `VerdictCounts`/`FindingCounts`/`PopulationFindingCounts`/`ReviewOutcomeCounts`/`ComplianceReport` (frozen Pydantic models, no free text anywhere), five bounded-window `text()` queries structurally parallel to `observability/metrics.py`'s own but never importing from or modifying it, and `get_compliance_report(engine, *, window_start, window_end, system_id=None)` — runs all five queries inside one `REPEATABLE READ` transaction (mirroring `population_engine/window.py`'s own precedent) so a report's five counts can never be silently read from five different, inconsistent snapshots.
+- `reporting/generate_report.py` — the CLI. Mirrors `population_engine/run_policies.py`'s/`retention/purge_expired_records.py`'s shape exactly: no daemon, no `bootstrap_plugins()`, no `Settings` fields read. Default window is the last full calendar month (UTC); `--window-start`/`--window-end` override together or not at all. `--system-id` optional (platform-wide when omitted). `--format json|csv` (`json` default) with `--output` meaning a file path for JSON or a required path prefix for CSV — five files: `<prefix>-verdicts.csv`, `<prefix>-findings.csv`, `<prefix>-population-findings.csv`, `<prefix>-verdict-reviews.csv`, `<prefix>-population-finding-reviews.csv`, each a genuinely flat table, row order made deterministic by sorting. JSON export reuses `audit/hash_chain.canonical_json` for byte-identical regeneration of the same window. `--database-url` connections use `db.session.create_db_engine`, never a bare `create_engine` — the fix M11's own CI failure taught this project to require explicitly, applied correctly here the first time.
+- Migration `0027` — `idx_verdict_reviews_status_resolved_at`/`idx_population_finding_reviews_status_resolved_at`, composite `(status, resolved_at)` indexes supporting the one genuinely new query pattern this milestone introduces ("which reviews were resolved within this window"). No new table, no `ALTER` of any existing column, no privilege change.
+- `tests/unit/reporting/test_compliance_report.py`, `tests/unit/reporting/test_generate_report.py` — pure-logic coverage (model shape/serialization, window-boundary math including the December/January wraparound, CSV row-flattening determinism, CLI argument-pairing validation), no database needed. `reporting/generate_report.py` reaches 100% local coverage from these alone.
+- `tests/integration/test_compliance_report_postgres.py`, `tests/integration/test_generate_report_postgres.py` — real Postgres round trips: window-boundary correctness (inclusive start, exclusive end), all five count categories, and — the design document's own explicitly-named risk — `--system-id` scoping every one of the five queries identically, so a report scoped to one system can never silently leak another system's review outcomes while correctly excluding its verdicts/findings.
+
+### Changed
+Nothing. This is the first milestone that adds a new capability without modifying any pre-existing source file — verified directly (no import of, or change to, `observability/metrics.py`, `api/dashboard.py`, any Admin API router, or either ingestion route from `reporting/`), not assumed.
+
+### Fixed
+_(found by actually running this milestone's SQL against a real Postgres instance — the first draft's own static-only review had concluded, wrongly, that nothing needed fixing; see `docs/milestones/M12.md`'s own "Production-Readiness Review" for the full, corrected account)_
+- All three `--system-id`-filtering queries that join through `decision_events`/`model_versions` (`_VERDICT_COUNTS_SQL`, `_FINDING_COUNTS_SQL`, `_REVIEW_OUTCOME_SQL`) contained `SELECT id FROM decision_events de JOIN model_versions mv ...` — a bare `id` ambiguous between the two joined tables' own `id` columns, rejected outright by Postgres (`AmbiguousColumn`). Copied verbatim from the frozen design's own §5.1 text, never caught by design review because design review reads SQL, it doesn't execute it. Fixed: qualified as `de.id`.
+- All five queries' `--system-id` filter (`:system_id IS NULL OR ...`) left the `IS NULL` parameter occurrence with no inferable type for Postgres's extended query protocol, failing with `AmbiguousParameter: could not determine data type of parameter`. Reproduced in isolation with a minimal `text("SELECT :x IS NULL OR :x = 'a'")` probe before touching the real queries. Fixed: `CAST(:system_id AS text) IS NULL OR ...` — an explicit type for the one ambiguous occurrence, leaving the other (already inferred from the column it's compared against) untouched.
+- Two of `tests/integration/test_generate_report_postgres.py`'s own assertions assumed a flatter JSON shape than `ComplianceReport.model_dump()` actually produces (nested Pydantic models correctly serialize as nested dicts — `report["verdicts"]["by_status"]`, not `report["verdicts"]` directly). A test-code bug, not a production-code one; fixed in the tests.
+- Along the way: this session's own earlier, improperly terminated `pytest` invocations were found still running as orphaned background processes, concurrently writing to a shared Postgres table and producing spurious count-mismatch failures in unrelated, pre-existing tests. Not a code defect — resolved by killing the stray processes; verified via `pg_stat_activity` before and after, and by re-running the full suite against a completely fresh, from-zero-migrated Postgres container to rule out any further contamination.
+
+### Deferred
+A PDF renderer (§12.1, this document's own highest-stakes call, resolved against). A persisted `reports` table and a minimal Admin API to list/download generated reports (§12.4). A second, differently-shaped report type / a report-type plugin port (§12.5). Delivery/distribution of a generated report (email, upload, scheduled push). Signing the generated report (a derived rendering of already-signed data, not new evidentiary output). Chain-integrity verification folded into report generation (`audit/verify_chain.py` remains separate). Real scheduling (cron, a Kubernetes `CronJob`) — deployment-topology scope, still M13. A staleness/"was this actually generated on schedule" signal. Authentication anywhere (still M13, now a tenth-consecutive-milestone gap). Pagination/streaming for very large report windows.
+
 ## [0.12.0-m11] — 2026-07-30 — M11: Encryption at Rest, Retention Tiers & Privilege Classification
 
 Completes architecture §13 ("Audit System") with the three things every

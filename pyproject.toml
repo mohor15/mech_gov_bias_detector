@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gov-platform"
-version = "0.12.0"
-description = "Domain-agnostic AI Governance Platform (V2) — M11: Encryption at rest, retention tiers, and privilege classification for the Evidence Store."
+version = "0.13.0"
+description = "Domain-agnostic AI Governance Platform (V2) — M12: Reporting — periodic, document-shaped compliance exports (JSON/CSV)."
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [
