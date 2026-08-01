@@ -162,7 +162,9 @@
       "Bash(sort -t: -k2)",
       "Bash(awk -F'def ' '{print $2}')",
       "Bash(where pg_ctl)",
-      "Bash(powershell -Command \"Get-Service -Name '*postgres*' -ErrorAction SilentlyContinue\")"
+      "Bash(powershell -Command \"Get-Service -Name '*postgres*' -ErrorAction SilentlyContinue\")",
+      "Bash(python -m pytest tests/integration --collect-only -q)",
+      "Bash(python *)"
     ]
   }
 }

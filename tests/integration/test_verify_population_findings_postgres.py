@@ -53,13 +53,32 @@ def _seed_signed_finding(db_engine, signer) -> PopulationFinding:
             population_policy_id="adverse-impact-ratio",
             population_policy_version="0.1.0",
             system_id=system.id,
-            window_start=datetime(2026, 1, 1, tzinfo=UTC),
-            window_end=datetime(2026, 1, 2, tzinfo=UTC),
+            # A deliberately, unambiguously earliest window/evaluated_at --
+            # not `datetime.now(UTC)`, not any 2026 date another test in
+            # this shared, never-truncated table might use. `list_all`
+            # (this module's own `verify_population_findings_from_database`
+            # target) orders by `evaluated_at` first, `id` only as a
+            # tiebreaker (docs/milestones/M15.md §5.2); `checked_count == 0`
+            # results whenever *any* row with a signature that doesn't
+            # verify under this test's own fresh key sorts before this
+            # one. Matching sibling files' own timestamps (whether a fixed
+            # 2026 date or `datetime.now(UTC)`) only ever proves "not tied
+            # with what exists today" -- it does not prove "sorts first,"
+            # since nothing guarantees another row's timestamp, now or in
+            # the future, stays later than whatever this file picks. An
+            # intentionally out-of-band, far-earlier sentinel is the only
+            # version of this fix that does not depend on what any other
+            # test (or the real wall clock a CI runner happens to have)
+            # does. See `docs/milestones/M15.md` — two prior attempts at
+            # this fix each matched some, but not all, sibling timestamps
+            # and CI failed on this exact assertion both times.
+            window_start=datetime(2000, 1, 1, tzinfo=UTC),
+            window_end=datetime(2000, 1, 2, tzinfo=UTC),
             outcome=PopulationFindingOutcome.CLEAR,
             metric_values={},
             classification_snapshot={"race": "DIRECT"},
             rationale="test",
-            evaluated_at=datetime(2026, 1, 2, tzinfo=UTC),
+            evaluated_at=datetime(2000, 1, 2, tzinfo=UTC),
         )
         signature = signer.sign(population_finding_hash(finding))
         PopulationFindingRepository().create(

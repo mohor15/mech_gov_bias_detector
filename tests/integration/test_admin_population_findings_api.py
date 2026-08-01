@@ -49,7 +49,17 @@ def _seed_finding(
             metric_values={"race:Black": 0.75},
             classification_snapshot={"race": "DIRECT"},
             rationale="test rationale",
-            evaluated_at=datetime(2026, 1, 2, tzinfo=UTC) + offset,
+            # A unique `evaluated_at`, not a fixed date -- see
+            # `test_admin_population_finding_reviews_api.py`'s identical
+            # comment (already in place before M15) for why: this
+            # "deadbeef" (non-cryptographic) signature and
+            # `test_verify_population_findings_postgres.py`'s own
+            # genuinely-signed record both sort by `evaluated_at` (now,
+            # since M15, with `id` as a deterministic tiebreaker rather
+            # than an arbitrary one) -- a fixed, shared timestamp here
+            # lets this row race that one for read order across files in
+            # the same shared, never-truncated table.
+            evaluated_at=datetime.now(UTC),
         )
         PopulationFindingRepository().create(
             session, finding, signature="deadbeef", signing_key_id="default"

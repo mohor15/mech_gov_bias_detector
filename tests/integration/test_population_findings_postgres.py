@@ -43,7 +43,16 @@ def _finding(system_id: str, **overrides: object) -> PopulationFinding:
         "metric_values": {"race:Black": 0.75},
         "classification_snapshot": {"race": "DIRECT"},
         "rationale": "test rationale",
-        "evaluated_at": datetime(2026, 1, 2, tzinfo=UTC),
+        # A unique default, not a fixed date -- see
+        # test_admin_population_findings_api.py's identical comment for
+        # why: test_create_persists_and_round_trips_every_field and
+        # test_as_population_finding_drops_signature_fields both call this
+        # helper unmodified with signature="deadbeef", and a fixed,
+        # shared evaluated_at here would let that non-cryptographic
+        # signature race test_verify_population_findings_postgres.py's own
+        # genuinely-signed record for read order in the same shared,
+        # never-truncated table.
+        "evaluated_at": datetime.now(UTC),
     }
     defaults.update(overrides)
     return PopulationFinding(**defaults)  # type: ignore[arg-type]
